@@ -320,7 +320,18 @@ namespace WPinternals
             if (ResultCode != 0)
                 ThrowFlashError(ResultCode);
         }
+        
+        internal void SwitchToMmosContext()
+        {
+            byte[] Request = new byte[7];
+            ByteOperations.WriteAsciiString(Request, 0, "NOKXCBA");
+            ExecuteRawVoidMethod(Request);
+            
+            ResetDevice();
 
+            Dispose(true);
+        }
+        
         private void ThrowFlashError(int ErrorCode)
         {
             string SubMessage;
@@ -449,6 +460,53 @@ namespace WPinternals
                 ResetPhone();
 
             LogFile.EndAction("FlashFFU");
+        }
+
+        public void FlashMMOS(string MMOSPath, ProgressUpdater UpdaterPerChunk)
+        {
+            LogFile.BeginAction("FlashMMOS");
+
+            ProgressUpdater Progress = UpdaterPerChunk;
+
+            PhoneInfo Info = ReadPhoneInfo();
+            if (!Info.MmosOverUsbSupported)
+                throw new WPinternalsException("Flash failed!", "Protocols not supported");
+
+            FileInfo info = new FileInfo(MMOSPath);
+            uint length = uint.Parse(info.Length.ToString());
+
+            int offset = 0;
+            int maximumbuffersize = 0x00240000;
+
+            uint totalcounts = (uint)Math.Truncate((decimal)length / maximumbuffersize);
+
+            using (System.IO.FileStream MMOSFile = new System.IO.FileStream(MMOSPath, System.IO.FileMode.Open, System.IO.FileAccess.Read))
+            {
+                for (int i = 1; i <= (uint)Math.Truncate((decimal)length / maximumbuffersize); i++)
+                {
+                    Progress.IncreaseProgress(1);
+                    byte[] data = new byte[maximumbuffersize];
+                    MMOSFile.Read(data, 0, maximumbuffersize);
+
+                    LoadMmosBinary(length, (uint)offset, false, data);
+
+                    offset += maximumbuffersize;
+                }
+
+                if (length - offset != 0)
+                {
+                    Progress.IncreaseProgress(1);
+
+                    byte[] data = new byte[length - offset];
+                    MMOSFile.Read(data, 0, (int)(length - offset));
+                    LoadMmosBinary(length, (uint)offset, false, data);
+                }
+                
+                SwitchToMmosContext();
+                ResetPhone();
+            }
+            
+            LogFile.EndAction("FlashMMOS");
         }
 
         public void FlashSectors(UInt32 StartSector, byte[] Data, int Progress = 0)
