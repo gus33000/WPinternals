@@ -75,6 +75,36 @@ namespace WPinternals
             return System.Text.ASCIIEncoding.ASCII.GetString(Bytes).Trim(new char[] { '\0' });
         }
 
+        [Flags]
+        internal enum Fuse
+        {
+            SecureBoot = 1,
+            FfuVerify = 2,
+            Jtag = 4,
+            Shk = 8,
+            Simlock = 16,
+            ProductionDone = 32,
+            Rkh = 64,
+            PublicId = 128,
+            Dak = 256,
+            SecGen = 512,
+            OemId = 1024,
+            FastBoot = 2048,
+            SpdmSecMode = 4096,
+            RpmWdog = 8192,
+            Ssm = 16384
+        }
+
+        public bool? ReadFuseStatus(Fuse fuse)
+        {
+            uint? flags = ReadSecurityFlags();
+            if (!flags.HasValue)
+                return null;
+            
+            var finalconfig = (Fuse)flags.Value;
+            return finalconfig.HasFlag(fuse);
+        }
+
         public uint? ReadSecurityFlags()
         {
             byte[] Response = ReadParam("FCS");
@@ -82,6 +112,24 @@ namespace WPinternals
 
             // This value is in big endian
             return (UInt32)((Response[0] << 24) | (Response[1] << 16) | (Response[2] << 8) | Response[3]);
+        }
+
+        public uint? ReadCurrentChargeLevel()
+        {
+            byte[] Response = ReadParam("CS");
+            if ((Response == null) || (Response.Length != 8)) return null;
+
+            // This value is in big endian
+            return (UInt32)((Response[0] << 24) | (Response[1] << 16) | (Response[2] << 8) | Response[3]) + 1;
+        }
+
+        public uint? ReadCurrentChargeCurrent()
+        {
+            byte[] Response = ReadParam("CS");
+            if ((Response == null) || (Response.Length != 8)) return null;
+
+            // This value is in big endian and needs to be XOR'd with 0xFFFFFFFF
+            return ((UInt32)((Response[4] << 24) | (Response[5] << 16) | (Response[6] << 8) | Response[7]) ^ 0xFFFFFFFF) + 1;
         }
 
         public UefiSecurityStatusResponse ReadSecurityStatus()
