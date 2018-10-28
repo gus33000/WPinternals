@@ -39,6 +39,7 @@ namespace WPinternals
         private USBNotifier StorageNotifier;
         private USBNotifier ComPortNotifier;
         private USBNotifier LumiaEmergencyNotifier;
+        private USBNotifier LumiaLabelNotifier;
 
         public PhoneInterfaces? CurrentInterface = null;
         private PhoneInterfaces? LastInterface = null;
@@ -54,6 +55,7 @@ namespace WPinternals
         private Guid LumiaFlashInterfaceGuid = new Guid("{9e3bd5f7-9690-4fcc-8810-3e2650cd6ecc}");
         private Guid ComPortInterfaceGuid = new Guid("{86E0D1E0-8089-11D0-9CE4-08003E301F73}");
         private Guid LumiaEmergencyInterfaceGuid = new Guid("{71DE994D-8B7C-43DB-A27E-2AE7CD579A0C}");
+        private Guid LumiaLabelInterfaceGuid = new Guid("{F4FE0C27-7304-4ED7-AAB5-130893B84B6F}");
 
         private object ModelLock = new object();
 
@@ -90,6 +92,10 @@ namespace WPinternals
             LumiaEmergencyNotifier = new USBNotifier(LumiaEmergencyInterfaceGuid);
             LumiaEmergencyNotifier.Arrival += LumiaNotifier_Arrival;
             LumiaEmergencyNotifier.Removal += LumiaNotifier_Removal;
+
+            LumiaLabelNotifier = new USBNotifier(LumiaLabelInterfaceGuid);
+            LumiaLabelNotifier.Arrival += LumiaNotifier_Arrival;
+            LumiaLabelNotifier.Removal += LumiaNotifier_Removal;
 
             try
             {
@@ -143,7 +149,8 @@ namespace WPinternals
         {
             try
             {
-                if (e.DevicePath.IndexOf("VID_0421&PID_0660&MI_04", StringComparison.OrdinalIgnoreCase) >= 0)
+                if ((e.DevicePath.IndexOf("VID_0421&PID_0660&MI_04", StringComparison.OrdinalIgnoreCase) >= 0) ||
+                    (e.DevicePath.IndexOf("VID_0421&PID_0713&MI_04", StringComparison.OrdinalIgnoreCase) >= 0)) // for Spec B
                 {
                     CurrentInterface = PhoneInterfaces.Lumia_Label;
                     CurrentModel = new NokiaPhoneModel(e.DevicePath);
@@ -358,6 +365,7 @@ namespace WPinternals
         {
             if (
                 (e.DevicePath.IndexOf("VID_0421&PID_0660&MI_04", StringComparison.OrdinalIgnoreCase) >= 0) ||
+                (e.DevicePath.IndexOf("VID_0421&PID_0713&MI_04", StringComparison.OrdinalIgnoreCase) >= 0) ||
                 (e.DevicePath.IndexOf("VID_0421&PID_0661", StringComparison.OrdinalIgnoreCase) >= 0) ||
                 (e.DevicePath.IndexOf("VID_0421&PID_06FC", StringComparison.OrdinalIgnoreCase) >= 0) ||
                 (e.DevicePath.IndexOf("VID_0421&PID_066E", StringComparison.OrdinalIgnoreCase) >= 0) ||

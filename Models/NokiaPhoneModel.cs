@@ -27,7 +27,7 @@ using System.Linq;
 
 namespace WPinternals
 {
-    internal class NokiaPhoneModel: IDisposable
+    internal class NokiaPhoneModel : IDisposable
     {
         protected bool Disposed = false;
         private USBDevice Device = null;
@@ -269,6 +269,19 @@ namespace WPinternals
         public byte[] ExecuteRawMethod(byte[] RawMethod)
         {
             return ExecuteRawMethod(RawMethod, RawMethod.Length);
+        }
+
+        public void ResetDevice()
+        {
+            try
+            {
+                foreach (var pipe in Device.Pipes)
+                {
+                    pipe.Abort();
+                    pipe.Reset();
+                }
+            }
+            catch { }
         }
 
         public byte[] ExecuteRawMethod(byte[] RawMethod, int Length)

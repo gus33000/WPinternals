@@ -379,7 +379,23 @@ namespace MadWizard.WinUSBNet
                 LogAndThrowException(new USBException("Failed to abort pipe.", e));
             }
         }
-        
+
+        /// <summary>
+        /// Resets all pending transfers for this pipe.
+        /// </summary>
+        public void Reset()
+        {
+            try
+            {
+                _device.InternalDevice.ResetPipe(Interface.InterfaceIndex, _pipeInfo.PipeId);
+            }
+            catch (API.APIException e)
+            {
+                // throw new USBException("Failed to reset pipe.", e);
+                LogAndThrowException(new USBException("Failed to reset pipe.", e));
+            }
+        }
+
         /// <summary>
         /// Flushes the pipe, discarding any data that is cached. Only available on IN direction pipes.
         /// </summary>

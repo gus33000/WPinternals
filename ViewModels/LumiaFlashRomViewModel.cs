@@ -28,7 +28,7 @@ using System.Threading.Tasks;
 
 namespace WPinternals
 {
-    internal class LumiaFlashRomViewModel: ContextViewModel
+    internal class LumiaFlashRomViewModel : ContextViewModel
     {
         private PhoneNotifierViewModel PhoneNotifier;
         internal Action SwitchToUnlockBoot;
@@ -57,7 +57,7 @@ namespace WPinternals
                 return;
 
             if (SubContextViewModel == null)
-                ActivateSubContext(new LumiaFlashRomSourceSelectionViewModel(PhoneNotifier, SwitchToUnlockBoot, SwitchToUnlockRoot, SwitchToDumpFFU, SwitchToBackup, FlashPartitions, FlashArchive, FlashFFU));
+                ActivateSubContext(new LumiaFlashRomSourceSelectionViewModel(PhoneNotifier, SwitchToUnlockBoot, SwitchToUnlockRoot, SwitchToDumpFFU, SwitchToBackup, FlashPartitions, FlashArchive, FlashFFU, FlashMMOS));
         }
 
         // Called from an event-handler. So, "async void" is valid here.
@@ -178,7 +178,7 @@ namespace WPinternals
                     else if ((MainOSNewSectorCount > 0) && (MainOSNewSectorCount > MainOSOldSectorCount))
                     {
                         LogFile.Log("Flash failed! Size of partition 'MainOS' is too big.");
-                       ExitFailure("Flash failed!", "Size of partition 'MainOS' is too big.");
+                        ExitFailure("Flash failed!", "Size of partition 'MainOS' is too big.");
                         return;
                     }
                     else if ((DataNewSectorCount > 0) && (DataNewSectorCount > DataOldSectorCount))
@@ -220,7 +220,7 @@ namespace WPinternals
                                 i++;
                                 Busy.Message = "Flashing partition MainOS (" + i.ToString() + @"/" + PartitionCount.ToString() + ")";
                                 Phone.FlashRawPartition(MainOSPath, "MainOS", Updater);
-                           }
+                            }
                         }
                         catch (Exception Ex)
                         {
@@ -249,7 +249,7 @@ namespace WPinternals
 
                     if (!Result)
                     {
-                    ExitFailure("Flash failed!", null);
+                        ExitFailure("Flash failed!", null);
                         return;
                     }
 
@@ -344,7 +344,7 @@ namespace WPinternals
 
                                         TotalSizeSectors += StreamLengthInSectors;
                                         PartitionCount++;
-                                            
+
                                         if (string.Compare(PartitionName, "MainOS", true) == 0)
                                         {
                                             MainOSOldSectorCount = Partition.SizeInSectors;
@@ -467,7 +467,7 @@ namespace WPinternals
                 ExitSuccess("Flash successful! Make sure you disable Windows Update on the phone!", null);
             }).Start();
         }
-        
+
         // Called from an event-handler. So, "async void" is valid here.
         internal async void FlashFFU(string FFUPath)
         {
@@ -607,6 +607,84 @@ namespace WPinternals
         }
 
         // Called from an event-handler. So, "async void" is valid here.
+        internal async void FlashMMOS(string MMOSPath)
+        {
+            IsSwitchingInterface = true; // Prevents that a device is forced to Flash mode on this screen which is meant for flashing
+            try
+            {
+                await SwitchModeViewModel.SwitchToWithProgress(PhoneNotifier, PhoneInterfaces.Lumia_Flash,
+                    (msg, sub) =>
+                        ActivateSubContext(new BusyViewModel(msg, sub)));
+                FlashMMOSTask(MMOSPath);
+            }
+            catch (Exception Ex)
+            {
+                ActivateSubContext(new MessageViewModel(Ex.Message, Callback));
+            }
+        }
+
+        internal void FlashMMOSTask(string MMOSPath)
+        {
+            NokiaFlashModel Phone = (NokiaFlashModel)PhoneNotifier.CurrentModel;
+            if (PhoneNotifier.CurrentInterface == PhoneInterfaces.Lumia_Bootloader)
+                Phone.SwitchToFlashAppContext();
+            
+            new Thread(() =>
+            {
+                bool Result = true;
+
+                ActivateSubContext(new BusyViewModel("Initializing flash..."));
+
+                string ErrorSubMessage = null;
+
+                try
+                {
+                    FileInfo info = new FileInfo(MMOSPath);
+                    uint length = uint.Parse(info.Length.ToString());
+                    int maximumbuffersize = 0x00240000;
+                    uint totalcounts = (uint)Math.Truncate((decimal)length / maximumbuffersize);
+                    BusyViewModel Busy = new BusyViewModel("Flashing Test Mode package...", MaxProgressValue: totalcounts, UIContext: UIContext);
+                    ActivateSubContext(Busy);
+
+                    Phone.FlashMMOS(MMOSPath, Busy.ProgressUpdater);
+
+                    ActivateSubContext(new BusyViewModel("And now booting phone to MMOS...", "If the phone stays on the lightning cog screen for a while, you may need to unplug and replug the phone to continue the boot process."));
+
+                    PhoneNotifier.NewDeviceArrived += NewDeviceArrived;
+                }
+                catch (Exception Ex)
+                {
+                    LogFile.LogException(Ex);
+                    if (Ex is WPinternalsException)
+                        ErrorSubMessage = ((WPinternalsException)Ex).SubMessage;
+                    Result = false;
+                }
+
+                if (!Result)
+                {
+                    ExitFailure("Flash failed!", ErrorSubMessage);
+                    return;
+                }
+            }).Start();
+        }
+
+        private void NewDeviceArrived(ArrivalEventArgs Args)
+        {
+            PhoneNotifier.NewDeviceArrived -= NewDeviceArrived;
+
+            if (Args.NewInterface != PhoneInterfaces.Lumia_Label)
+            {
+                ExitFailure("Flash failed!", "Phone unexpectedly switched mode while booting MMOS image.");
+                return;
+            }
+            else
+            {
+                ExitSuccess("Flash successful!", null);
+                return;
+            }
+        }
+
+        // Called from an event-handler. So, "async void" is valid here.
         internal async void Exit()
         {
             try
@@ -644,7 +722,7 @@ namespace WPinternals
 
         internal void ExitFailure(string Message, string SubMessage)
         {
-            MessageViewModel ErrorMessageViewModel = new MessageViewModel(Message, () => 
+            MessageViewModel ErrorMessageViewModel = new MessageViewModel(Message, () =>
             {
                 IsSwitchingInterface = false;
                 Callback();
