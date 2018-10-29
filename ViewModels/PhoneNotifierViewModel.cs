@@ -63,6 +63,8 @@ namespace WPinternals
 
         private EventLogWatcher LogWatcher;
 
+        private string Qcom9006DevicePath;
+
         internal void Start()
         {
             LumiaOldCombiNotifier = new USBNotifier(OldCombiInterfaceGuid);
@@ -260,6 +262,10 @@ namespace WPinternals
                             if (!(CurrentModel is MassStorage))
                             {
                                 MassStorage NewModel = new MassStorage(e.DevicePath);
+
+                                if (!string.IsNullOrEmpty(Qcom9006DevicePath))
+                                    NewModel.AttachQualcommSerial(Qcom9006DevicePath);
+
                                 if (NewModel.Drive != null) // When logical drive is already known, we use this model. Or else we wait for the logical drive to arrive.
                                 {
                                     CurrentInterface = PhoneInterfaces.Lumia_MassStorage;
@@ -291,6 +297,10 @@ namespace WPinternals
                             if (!(CurrentModel is MassStorage))
                             {
                                 MassStorage NewModel = new MassStorage(e.DevicePath);
+
+                                if (!string.IsNullOrEmpty(Qcom9006DevicePath))
+                                    NewModel.AttachQualcommSerial(Qcom9006DevicePath);
+
                                 if (NewModel.Drive != null) // When logical drive is already known, we use this model. Or else we wait for the logical drive to arrive.
                                 {
                                     CurrentInterface = PhoneInterfaces.Lumia_MassStorage;
@@ -346,6 +356,8 @@ namespace WPinternals
                     LogFile.Log("Device path: " + e.DevicePath, LogType.FileOnly);
                     LogFile.Log("Connected device: Lumia", LogType.FileAndConsole);
                     LogFile.Log("Mode: Qualcomm Emergency 9006", LogType.FileAndConsole);
+
+                    Qcom9006DevicePath = e.DevicePath;
                 }
             }
             catch (Exception Ex)
@@ -363,6 +375,11 @@ namespace WPinternals
 
         void LumiaNotifier_Removal(object sender, USBEvent e)
         {
+            if (e.DevicePath.IndexOf("VID_05C6&PID_9006", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                Qcom9006DevicePath = null;
+            }
+
             if (
                 (e.DevicePath.IndexOf("VID_0421&PID_0660&MI_04", StringComparison.OrdinalIgnoreCase) >= 0) ||
                 (e.DevicePath.IndexOf("VID_0421&PID_0713&MI_04", StringComparison.OrdinalIgnoreCase) >= 0) ||

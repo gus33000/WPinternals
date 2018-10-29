@@ -311,11 +311,87 @@ namespace WPinternals
                     }
                     break;
                 case PhoneInterfaces.Lumia_MassStorage:
-                    // TODO: don't know how to switch from Mass Storage to other mode
+                    IsSwitchingInterface = true;
+                    switch (TargetMode)
+                    {
+                        case PhoneInterfaces.Lumia_Normal:
+                            ((MassStorage)CurrentModel).Reboot();
+                            PhoneNotifier.NewDeviceArrived += NewDeviceArrived;
+                            ModeSwitchProgressWrapper("Rebooting phone to Normal mode...", null);
+                            LogFile.Log("Rebooting phone to Normal mode", LogType.FileAndConsole);
+                            break;
+                        case PhoneInterfaces.Lumia_Label:
+                            ((MassStorage)CurrentModel).Reboot();
+                            PhoneNotifier.NewDeviceArrived += NewDeviceArrivedFromMassStorageMode;
+                            ModeSwitchProgressWrapper("Rebooting phone to Label mode...", null);
+                            LogFile.Log("Rebooting phone to Label mode...", LogType.FileAndConsole);
+                            break;
+                        case PhoneInterfaces.Lumia_Flash:
+                            ((MassStorage)CurrentModel).Reboot();
+                            PhoneNotifier.NewDeviceArrived += NewDeviceArrivedFromMassStorageMode;
+                            ModeSwitchProgressWrapper("Rebooting phone to Flash mode...", null);
+                            LogFile.Log("Rebooting phone to Flash mode...", LogType.FileAndConsole);
+                            break;
+                        default:
+                            return;
+                    }
                     break;
                 case PhoneInterfaces.Qualcomm_Download:
                     // TODO: don't know how to switch from Qualcomm Download mode to other mode
                     break;
+            }
+        }
+
+        private void NewDeviceArrivedFromMassStorageMode(ArrivalEventArgs Args)
+        {
+            PhoneNotifier.NewDeviceArrived -= NewDeviceArrivedFromMassStorageMode;
+
+            CurrentModel = (IDisposable)Args.NewModel;
+            CurrentMode = Args.NewInterface;
+
+            // After the mass storage mode reboot command, the phone must be in Bootloader mode.
+            // If it isn't, something unexpected happened and the phone can't be switched.
+            //
+            if (CurrentMode == PhoneInterfaces.Lumia_Bootloader)
+            {
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        await SwitchToWithProgress(PhoneNotifier, TargetMode, ModeSwitchProgress);
+                        ModeSwitchSuccessWrapper();
+                    }
+                    catch
+                    {
+                        switch (TargetMode)
+                        {
+                            case PhoneInterfaces.Lumia_Flash:
+                                ModeSwitchErrorWrapper("Failed to switch to Flash mode");
+                                break;
+                            case PhoneInterfaces.Lumia_Label:
+                                ModeSwitchErrorWrapper("Failed to switch to Label mode");
+                                break;
+                            case PhoneInterfaces.Lumia_Normal:
+                                ModeSwitchErrorWrapper("Failed to switch to Normal mode");
+                                break;
+                        }
+                    }
+                });
+            }
+            else
+            {
+                switch (TargetMode)
+                {
+                    case PhoneInterfaces.Lumia_Flash:
+                        ModeSwitchErrorWrapper("Failed to switch to Flash mode");
+                        break;
+                    case PhoneInterfaces.Lumia_Label:
+                        ModeSwitchErrorWrapper("Failed to switch to Label mode");
+                        break;
+                    case PhoneInterfaces.Lumia_Normal:
+                        ModeSwitchErrorWrapper("Failed to switch to Normal mode");
+                        break;
+                }
             }
         }
 
