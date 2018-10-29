@@ -359,7 +359,7 @@ namespace WPinternals
                 {
                     try
                     {
-                        await SwitchToWithProgress(PhoneNotifier, TargetMode, ModeSwitchProgress);
+                        await SwitchToWithStatus(PhoneNotifier, TargetMode, SetWorkingStatus, UpdateWorkingStatus);
                         ModeSwitchSuccessWrapper();
                     }
                     catch
