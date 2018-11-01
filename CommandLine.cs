@@ -1575,9 +1575,7 @@ namespace WPinternals
                         }
                         break;
                     case "disablebootpolicychecks":
-                        if (args.Length < 4)
-                            throw new ArgumentException("Wrong number of arguments. Usage: WPinternals.exe -DisableBootPolicyChecks <Phone FFU image> <Donor supported FFU>");
-                        await TestCode.DisableBootPolicyChecks(UIContext, args[2], args[3]);
+                        await TestCode.DisableBootPolicyChecks(UIContext);
                         break;
                     case "enablebootpolicychecks":
                         await TestCode.EnableBootPolicyChecks(UIContext);
