@@ -1575,7 +1575,7 @@ namespace WPinternals
                         }
                         break;
                     case "disablebootpolicychecks":
-                        if (args.Length < 3)
+                        if (args.Length < 4)
                             throw new ArgumentException("Wrong number of arguments. Usage: WPinternals.exe -DisableBootPolicyChecks <Phone FFU image> <Donor supported FFU>");
                         await TestCode.DisableBootPolicyChecks(UIContext, args[2], args[3]);
                         break;
@@ -1583,6 +1583,7 @@ namespace WPinternals
                         await TestCode.EnableBootPolicyChecks(UIContext);
                         break;
                     default:
+                        LogFile.Log("", LogType.ConsoleOnly);
                         LogFile.Log("WPinternals commandline usage:", LogType.ConsoleOnly);
                         LogFile.Log("", LogType.ConsoleOnly);
                         LogFile.Log("*** Phone info ***", LogType.ConsoleOnly);
