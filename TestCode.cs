@@ -72,63 +72,50 @@ namespace WPinternals
             await SwitchModeViewModel.SwitchTo(Notifier, PhoneInterfaces.Lumia_MassStorage);
             MassStorage MassStorage = (MassStorage)Notifier.CurrentModel;
 
-            App.PatchEngine.TargetPath = MassStorage.Drive + @"\EFIESP\";
-
             LogFile.Log("Patching bootarm.efi", LogType.FileAndConsole);
             string bootarm = MassStorage.Drive + @"\EFIESP\efi\boot\bootarm.efi";
             byte[] bootarmbuffer = File.ReadAllBytes(bootarm);
 
             uint? secoffset = ByteOperations.FindUnicode(bootarmbuffer, "BecureBoot");
-            uint? curoffset = ByteOperations.FindUnicode(bootarmbuffer, "BurrentPolicy");
 
             if (secoffset.HasValue)
                 ByteOperations.WriteUnicodeString(bootarmbuffer, secoffset.Value, "S");
-            if (curoffset.HasValue)
-                ByteOperations.WriteUnicodeString(bootarmbuffer, curoffset.Value, "C");
 
             CalculateChecksum(bootarmbuffer);
 
             File.WriteAllBytes(bootarm, bootarmbuffer);
 
-            LogFile.Log("Patching winload.efi", LogType.FileAndConsole);
-            string winload = MassStorage.Drive + @"\Windows\System32\boot\winload.efi";
+            LogFile.Log("Patching mobilestartup.efi", LogType.FileAndConsole);
 
-            byte[] winloadbuffer = File.ReadAllBytes(winload);
+            string ms = MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi";
 
-            secoffset = ByteOperations.FindUnicode(winloadbuffer, "BecureBoot");
-            curoffset = ByteOperations.FindUnicode(winloadbuffer, "BurrentPolicy");
-
-            if (secoffset.HasValue)
-                ByteOperations.WriteUnicodeString(winloadbuffer, secoffset.Value, "S");
+            byte[] msbuffer = File.ReadAllBytes(ms);
+            
+            uint? curoffset = ByteOperations.FindUnicode(msbuffer, "BurrentPolicy");
+            
             if (curoffset.HasValue)
-                ByteOperations.WriteUnicodeString(winloadbuffer, curoffset.Value, "C");
+                ByteOperations.WriteUnicodeString(msbuffer, curoffset.Value, "C");
 
-            CalculateChecksum(winloadbuffer);
+            CalculateChecksum(msbuffer);
 
-            File.WriteAllBytes(winload, winloadbuffer);
-
+            File.WriteAllBytes(ms, msbuffer);
+            
             LogFile.Log("Disabling Root Access on EFIESP", LogType.FileAndConsole);
 
-            App.PatchEngine.Restore("SecureBootHack-V2-EFIESP");
+            App.PatchEngine.TargetPath = MassStorage.Drive + @"\EFIESP\";
             App.PatchEngine.Restore("SecureBootHack-V1-EFIESP");
 
-            if (File.Exists(MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi.bak"))
-            {
-                File.Delete(MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi");
-                File.Move(MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi.bak", MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi");
-            }
-            if (File.Exists(MassStorage.Drive + @"\EFIESP\efi\Boot\bootarm.efi.bak"))
-            {
-                File.Delete(MassStorage.Drive + @"\EFIESP\efi\Boot\bootarm.efi");
-                File.Move(MassStorage.Drive + @"\EFIESP\efi\Boot\bootarm.efi.bak", MassStorage.Drive + @"\EFIESP\efi\Boot\bootarm.efi");
-            }
+            LogFile.Log("Disabling Root Access on MainOS", LogType.FileAndConsole);
+
+            App.PatchEngine.TargetPath = MassStorage.Drive + @"\";
+            App.PatchEngine.Restore("SecureBootHack-MainOS");
 
             Notifier.Stop();
 
-            LogFile.Log("Boot Policy Checks enabled successfully!", LogType.FileAndConsole);
+            LogFile.Log("Boot Policy Checks re-enabled successfully!", LogType.FileAndConsole);
         }
 
-        internal static async Task DisableBootPolicyChecks(System.Threading.SynchronizationContext UIContext, string PhoneFFU, string DonorFFU)
+        internal static async Task DisableBootPolicyChecks(System.Threading.SynchronizationContext UIContext)
         {
             LogFile.Log("Command: Disable Boot Policy Checks", LogType.FileAndConsole);
 
@@ -176,49 +163,26 @@ namespace WPinternals
 
             await SwitchModeViewModel.SwitchTo(Notifier, PhoneInterfaces.Lumia_MassStorage);
             MassStorage MassStorage = (MassStorage)Notifier.CurrentModel;
-
+            
             App.PatchEngine.TargetPath = MassStorage.Drive + @"\EFIESP\";
 
             LogFile.Log("Enabling Root Access on EFIESP", LogType.FileAndConsole);
-            File.Copy(MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi", MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi.bak");
             bool Result = App.PatchEngine.Patch("SecureBootHack-V1-EFIESP");
             if (!Result)
             {
-                LogFile.Log("Taking bootarm.efi from phone FFU", LogType.FileAndConsole);
-                FFU Phone = new FFU(PhoneFFU);
-
-                byte[] SupportedEFIESP = Phone.GetPartition("EFIESP");
-                DiscUtils.Fat.FatFileSystem SupportedEFIESPFileSystem = new DiscUtils.Fat.FatFileSystem(new MemoryStream(SupportedEFIESP));
-                DiscUtils.SparseStream SupportedBootarmStream = SupportedEFIESPFileSystem.OpenFile(@"\efi\Boot\bootarm.efi", FileMode.Open);
-                MemoryStream SupportedBootarmmemStream = new MemoryStream();
-                SupportedBootarmStream.CopyTo(SupportedBootarmmemStream);
-                byte[] SupportedBootarm = SupportedBootarmmemStream.ToArray();
-                SupportedBootarmmemStream.Close();
-
-                SupportedBootarmStream.Close(); DiscUtils.SparseStream SupportedMobileStartupStream = SupportedEFIESPFileSystem.OpenFile(@"\Windows\System32\Boot\mobilestartup.efi", FileMode.Open);
-                MemoryStream SupportedMobileStartupMemStream = new MemoryStream();
-                SupportedMobileStartupStream.CopyTo(SupportedMobileStartupMemStream);
-                byte[] SupportedMobileStartup = SupportedMobileStartupMemStream.ToArray();
-                SupportedMobileStartupMemStream.Close();
-                SupportedMobileStartupStream.Close();
-                
-                File.Move(MassStorage.Drive + @"\EFIESP\efi\Boot\bootarm.efi", MassStorage.Drive + @"\EFIESP\efi\Boot\bootarm.efi.bak");
-                
-                File.WriteAllBytes(MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi", SupportedMobileStartup);
-                File.WriteAllBytes(MassStorage.Drive + @"\EFIESP\efi\Boot\bootarm.efi", SupportedBootarm);
-
-                Result = App.PatchEngine.Patch("SecureBootHack-V1-EFIESP");
-
-                if (!Result)
-                {
-                    LogFile.Log("Unable to disable boot policies on EFIESP!", LogType.FileAndConsole);
-                    return;
-                }
+                LogFile.Log("Unable to disable boot policies on EFIESP!", LogType.FileAndConsole);
+                return;
             }
-            else
+
+
+            App.PatchEngine.TargetPath = MassStorage.Drive + @"\";
+
+            LogFile.Log("Enabling Root Access on MainOS", LogType.FileAndConsole);
+            Result = App.PatchEngine.Patch("SecureBootHack-MainOS");
+            if (!Result)
             {
-                File.Delete(MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi");
-                File.Move(MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi.bak", MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi");
+                LogFile.Log("Unable to disable boot policies on MainOS!", LogType.FileAndConsole);
+                return;
             }
 
             LogFile.Log("Patching bootarm.efi", LogType.FileAndConsole);
@@ -227,65 +191,32 @@ namespace WPinternals
             byte[] bootarmbuffer = File.ReadAllBytes(bootarm);
 
             uint? secoffset = ByteOperations.FindUnicode(bootarmbuffer, "SecureBoot");
-            uint? curoffset = ByteOperations.FindUnicode(bootarmbuffer, "CurrentPolicy");
 
             if (secoffset.HasValue)
                 ByteOperations.WriteUnicodeString(bootarmbuffer, secoffset.Value, "B");
-            if (curoffset.HasValue)
-                ByteOperations.WriteUnicodeString(bootarmbuffer, curoffset.Value, "B");
 
             CalculateChecksum(bootarmbuffer);
 
             File.WriteAllBytes(bootarm, bootarmbuffer);
 
             LogFile.Log("Patching mobilestartup.efi", LogType.FileAndConsole);
-            Result = App.PatchEngine.Patch("SecureBootHack-V2-EFIESP");
-            if (!Result)
-            {
-                LogFile.Log("Taking mobilestartup.efi from Donor FFU", LogType.FileAndConsole);
-                FFU SupportedFFU = new FFU(DonorFFU);
-                byte[] SupportedEFIESP = SupportedFFU.GetPartition("EFIESP");
-                DiscUtils.Fat.FatFileSystem SupportedEFIESPFileSystem = new DiscUtils.Fat.FatFileSystem(new MemoryStream(SupportedEFIESP));
-                DiscUtils.SparseStream SupportedMobileStartupStream = SupportedEFIESPFileSystem.OpenFile(@"\Windows\System32\Boot\mobilestartup.efi", FileMode.Open);
-                MemoryStream SupportedMobileStartupMemStream = new MemoryStream();
-                SupportedMobileStartupStream.CopyTo(SupportedMobileStartupMemStream);
-                byte[] SupportedMobileStartup = SupportedMobileStartupMemStream.ToArray();
-                SupportedMobileStartupMemStream.Close();
-                SupportedMobileStartupStream.Close();
-                
-                if (!File.Exists(MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi.bak"))
-                    File.Move(MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi", MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi.bak");
-
-                File.WriteAllBytes(MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi", SupportedMobileStartup);
-                Result = App.PatchEngine.Patch("SecureBootHack-V2-EFIESP");
-
-                if (!Result)
-                {
-                    LogFile.Log("Unable to disable boot policies on EFIESP!", LogType.FileAndConsole);
-                    return;
-                }
-            }
             
-            LogFile.Log("Patching winload.efi", LogType.FileAndConsole);
-            string winload = MassStorage.Drive + @"\Windows\System32\boot\winload.efi";
+            string ms = MassStorage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi";
 
-            byte[] winloadbuffer = File.ReadAllBytes(winload);
-
-            secoffset = ByteOperations.FindUnicode(winloadbuffer, "SecureBoot");
-            curoffset = ByteOperations.FindUnicode(winloadbuffer, "CurrentPolicy");
-
-            if (secoffset.HasValue)
-                ByteOperations.WriteUnicodeString(winloadbuffer, secoffset.Value, "B");
+            byte[] msbuffer = File.ReadAllBytes(ms);
+            
+            uint? curoffset = ByteOperations.FindUnicode(msbuffer, "CurrentPolicy");
+            
             if (curoffset.HasValue)
-                ByteOperations.WriteUnicodeString(winloadbuffer, curoffset.Value, "B");
+                ByteOperations.WriteUnicodeString(msbuffer, curoffset.Value, "B");
 
-            CalculateChecksum(winloadbuffer);
+            CalculateChecksum(msbuffer);
 
-            File.WriteAllBytes(winload, winloadbuffer);
-
+            File.WriteAllBytes(ms, msbuffer);
+            
             Notifier.Stop();
 
-            LogFile.Log("Boot Policy Checks enabled successfully!", LogType.FileAndConsole);
+            LogFile.Log("Boot Policy Checks disabled successfully!", LogType.FileAndConsole);
         }
 
         private static UInt32 CalculateChecksum(byte[] PEFile)
