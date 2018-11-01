@@ -99,16 +99,21 @@ namespace WPinternals
             CalculateChecksum(msbuffer);
 
             File.WriteAllBytes(ms, msbuffer);
-            
-            LogFile.Log("Disabling Root Access on EFIESP", LogType.FileAndConsole);
 
-            App.PatchEngine.TargetPath = MassStorage.Drive + @"\EFIESP\";
-            App.PatchEngine.Restore("SecureBootHack-V1-EFIESP");
+            LogFile.Log("Patching winload.efi", LogType.FileAndConsole);
 
-            LogFile.Log("Disabling Root Access on MainOS", LogType.FileAndConsole);
+            string winload = MassStorage.Drive + @"\Windows\System32\Boot\winload.efi";
 
-            App.PatchEngine.TargetPath = MassStorage.Drive + @"\";
-            App.PatchEngine.Restore("SecureBootHack-MainOS");
+            byte[] wlbuffer = File.ReadAllBytes(winload);
+
+            secoffset = ByteOperations.FindUnicode(wlbuffer, "BecureBoot");
+
+            if (secoffset.HasValue)
+                ByteOperations.WriteUnicodeString(wlbuffer, secoffset.Value, "S");
+
+            CalculateChecksum(wlbuffer);
+
+            File.WriteAllBytes(winload, wlbuffer);
 
             Notifier.Stop();
 
@@ -190,10 +195,11 @@ namespace WPinternals
 
             byte[] bootarmbuffer = File.ReadAllBytes(bootarm);
 
-            uint? secoffset = ByteOperations.FindUnicode(bootarmbuffer, "SecureBoot");
+            uint? secoffset = ByteOperations.FindUnicode(bootarmbuffer, "\0SecureBoot");
 
             if (secoffset.HasValue)
-                ByteOperations.WriteUnicodeString(bootarmbuffer, secoffset.Value, "B");
+                ByteOperations.WriteUnicodeString(bootarmbuffer, secoffset.Value, "\0B");
+
 
             CalculateChecksum(bootarmbuffer);
 
@@ -214,6 +220,21 @@ namespace WPinternals
 
             File.WriteAllBytes(ms, msbuffer);
             
+            LogFile.Log("Patching winload.efi", LogType.FileAndConsole);
+
+            string winload = MassStorage.Drive + @"\Windows\System32\Boot\winload.efi";
+
+            byte[] wlbuffer = File.ReadAllBytes(winload);
+
+            secoffset = ByteOperations.FindUnicode(wlbuffer, "SecureBoot");
+
+            if (secoffset.HasValue)
+                ByteOperations.WriteUnicodeString(wlbuffer, secoffset.Value, "B");
+
+            CalculateChecksum(wlbuffer);
+
+            File.WriteAllBytes(winload, wlbuffer);
+
             Notifier.Stop();
 
             LogFile.Log("Boot Policy Checks disabled successfully!", LogType.FileAndConsole);
