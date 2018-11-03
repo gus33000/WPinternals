@@ -1226,6 +1226,7 @@
     <AppDesigner Include="Properties\" />
     <EmbeddedResource Include="SB" />
     <EmbeddedResource Include="SBMSM" />
+    <EmbeddedResource Include="SBA" />
   </ItemGroup>
   <ItemGroup>
     <Resource Include="Logo.png" />
