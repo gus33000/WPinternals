@@ -38,7 +38,8 @@ namespace WPinternals
     {
         Default,
         LumiaSpecAGetGPT,
-        LumiaSpecBUnlockBoot
+        LumiaSpecBUnlockBoot,
+        LumiaSpecARelock
     };
 
     internal class LumiaUnlockBootViewModel : ContextViewModel
@@ -62,12 +63,14 @@ namespace WPinternals
         private byte[] SBL3;
         private byte[] UEFI;
         private FFU FFU;
+        private FFU SupportedFFU;
         private Action SwitchToFlashRom;
         private Action SwitchToUndoRoot;
         private Action SwitchToDownload;
         private bool DoUnlock;
         private MachineState State;
         private object EvaluateViewStateLockObject = new object();
+        private bool HasSBL3;
 
         internal LumiaUnlockBootViewModel(PhoneNotifierViewModel PhoneNotifier, Action SwitchToFlashRom, Action SwitchToUndoRoot, Action SwitchToDownload, bool DoUnlock, Action Callback)
             : base()
@@ -145,7 +148,7 @@ namespace WPinternals
             if (!IsActive)
                 return;
 
-            if ((State == MachineState.LumiaSpecAGetGPT) || (State == MachineState.LumiaSpecBUnlockBoot))
+            if ((State == MachineState.LumiaSpecAGetGPT) || (State == MachineState.LumiaSpecBUnlockBoot) || (State == MachineState.LumiaSpecARelock))
                 return;
 
             lock (EvaluateViewStateLockObject)
@@ -202,13 +205,13 @@ namespace WPinternals
                             if (DoUnlock)
                             {
                                 IsSwitchingInterface = true;
-                                LogFile.Log("Phone detected in Flash-in-progress-mode. Escaping from Flash-mode.;");
-                                ActivateSubContext(new BusyViewModel("Escaping from Flash mode..."));
+                                LogFile.Log("Phone detected in Flash-in-progress-mode. Flashing unlocked bootloader Part 2");
+                                ActivateSubContext(new BusyViewModel("Flashing..."));
 
                                 new Thread(() =>
-                                    {
-                                        RecoverFromFlashMode();
-                                    }).Start();
+                                {
+                                    FlashUnlockedBootLoaderPart2();
+                                }).Start();
                             }
                             else
                             {
@@ -247,17 +250,18 @@ namespace WPinternals
                                         // This is a callback on the UI thread
                                         // Resources are confirmed by user
                                         this.FFUPath = FFUPath;
-                                            this.LoadersPath = LoadersPath;
-                                            this.SBL3Path = SBL3Path;
-                                            StorePaths();
+                                        this.LoadersPath = LoadersPath;
+                                        this.SBL3Path = SBL3Path;
+                                        this.SupportedFFUPath = SupportedFFUPath;
+                                        StorePaths();
 
-                                            LogFile.Log("Processing resources:");
-                                            LogFile.Log("FFU: " + FFUPath);
-                                            LogFile.Log("Loaders: " + LoadersPath);
-                                            if (SBL3Path == null)
-                                                LogFile.Log("No SBL3 specified");
-                                            else
-                                                LogFile.Log("SBL3: " + SBL3Path);
+                                        LogFile.Log("Processing resources:");
+                                        LogFile.Log("FFU: " + FFUPath);
+                                        LogFile.Log("Loaders: " + LoadersPath);
+                                        if (SBL3Path == null)
+                                            LogFile.Log("No SBL3 specified");
+                                        else
+                                            LogFile.Log("SBL3: " + SBL3Path);
 
                                         ActivateSubContext(new BusyViewModel("Processing resources..."));
 
@@ -270,13 +274,13 @@ namespace WPinternals
                                                     if (!ResourcesVerified)
                                                     {
                                                         LogFile.Log("Processing resources failed.");
-                                                    ActivateSubContext(new MessageViewModel("Invalid resources.", Abort));
+                                                        ActivateSubContext(new MessageViewModel("Invalid resources.", Abort));
                                                     }
                                                 }
                                                 catch (Exception Ex)
                                                 {
                                                     LogFile.LogException(Ex);
-                                                ActivateSubContext(new MessageViewModel(Ex.Message, Abort));
+                                                    ActivateSubContext(new MessageViewModel(Ex.Message, Abort));
                                                 }
 
                                                 if (ResourcesVerified)
@@ -462,6 +466,238 @@ namespace WPinternals
             }
         }
 
+        private async void FlashUnlockedBootLoaderPart2()
+        {
+            NokiaFlashModel FlashModel = (NokiaFlashModel)PhoneNotifier.CurrentModel;
+
+            if (SBL3Path == null)
+                LogFile.Log("No SBL3 specified, not going to attempt working off the phone current EFIESP partition.");
+
+            if (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V1.1-EFIESP").First().TargetVersions.Any(v => v.Description == FFU.GetOSVersion()))
+                SupportedFFU = FFU;
+
+            if (SupportedFFUPath != null)
+                SupportedFFU = new FFU(SupportedFFUPath);
+
+            ActivateSubContext(new BusyViewModel("Flashing unlocked bootloader (part 2)...", UIContext: UIContext));
+
+            // Use GetGptChunk() here instead of ReadGPT(), because ReadGPT() skips the first sector.
+            // We need the fist sector if we want to write back the GPT.
+            byte[] GPTChunk = LumiaV2UnlockBootViewModel.GetGptChunk(FlashModel, 0x20000);
+            GPT GPT = new GPT(GPTChunk);
+            bool GPTChanged = false;
+            Partition BACKUP_BS_NV = GPT.GetPartition("BACKUP_BS_NV");
+            Partition UEFI_BS_NV;
+            if (BACKUP_BS_NV == null)
+            {
+                BACKUP_BS_NV = GPT.GetPartition("UEFI_BS_NV");
+                Guid OriginalPartitionTypeGuid = BACKUP_BS_NV.PartitionTypeGuid;
+                Guid OriginalPartitionGuid = BACKUP_BS_NV.PartitionGuid;
+                BACKUP_BS_NV.Name = "BACKUP_BS_NV";
+                BACKUP_BS_NV.PartitionGuid = Guid.NewGuid();
+                BACKUP_BS_NV.PartitionTypeGuid = Guid.NewGuid();
+                UEFI_BS_NV = new Partition();
+                UEFI_BS_NV.Name = "UEFI_BS_NV";
+                UEFI_BS_NV.Attributes = BACKUP_BS_NV.Attributes;
+                UEFI_BS_NV.PartitionGuid = OriginalPartitionGuid;
+                UEFI_BS_NV.PartitionTypeGuid = OriginalPartitionTypeGuid;
+                UEFI_BS_NV.FirstSector = BACKUP_BS_NV.LastSector + 1;
+                UEFI_BS_NV.LastSector = UEFI_BS_NV.FirstSector + BACKUP_BS_NV.LastSector - BACKUP_BS_NV.FirstSector;
+                GPT.Partitions.Add(UEFI_BS_NV);
+                GPTChanged = true;
+            }
+            if (GPTChanged)
+            {
+                GPT.Rebuild();
+                FlashModel.FlashSectors(0, GPTChunk, 0);
+            }
+
+
+            SeekableStream Stream = new SeekableStream(() =>
+            {
+                var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+
+                // Magic!
+                // The SBA resource is a compressed version of a raw NV-variable-partition.
+                // In this partition the SecureBoot variable is disabled.
+                // It overwrites the variable in a different NV-partition than where this variable is stored usually.
+                var stream = assembly.GetManifestResourceStream("WPinternals.SBA");
+
+                return new DecompressedStream(stream);
+            });
+
+            byte[] buffer = new byte[Stream.Length];
+            Stream.Read(buffer, 0, (int)Stream.Length);
+
+            Partition Target = GPT.GetPartition("UEFI_BS_NV");
+            FlashModel.FlashSectors((uint)Target.FirstSector, buffer);
+
+            if (SBL3Path != null)
+            {
+                LogFile.Log("Switching to Mass Storage mode...");
+
+                byte[] BootModeFlagCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x58, 0x46, 0x57, 0x00, 0x55, 0x42, 0x46, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00 }; // NOKFW UBF
+                byte[] RebootCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x52 };
+                byte[] RebootToMassStorageCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x4D }; // NOKM
+                byte[] RebootCommandResult = FlashModel.ExecuteRawMethod(RebootToMassStorageCommand);
+                if ((RebootCommandResult != null) && (RebootCommandResult.Length == 4)) // This means fail: NOKU (unknow command)
+                {
+                    // TODO handle failure
+                }
+                else
+                {
+                    string MassStorageWarning = "Switching to Mass Storage mode should take about 10 seconds. The phone should be unlocked using an Engineering SBL3 to enable Mass Storage mode. When you unlocked the bootloader, but you did not use an Engineering SBL3, an attempt to boot to Mass Storage mode may result in an unresponsive state. Installing drivers for this interface may also cause to hang the PC. So when this switch is taking too long, you should reboot both the PC and the phone. To reboot the phone, you have to perform a soft-reset. Press and hold the volume-down-button and the power-button at the same time for at least 10 seconds. This will trigger a power-cycle and the phone will reboot. Once fully booted, the phone may show strange behavior, like complaining about mail-accounts, showing old text-messages, inability to load https-websites, etc. This is expected behavior, because the time-settings of the phone are incorrect. Just wait a few seconds for the phone to get a data-connection and have the date/time synced. After that the strange behavior will stop automatically and normal operation is resumed.";
+                    ActivateSubContext(new BusyViewModel("Switching to Mass Storage Mode...", MassStorageWarning, UIContext: UIContext));
+                    LogFile.Log("Rebooting phone to Mass Storage mode");
+                    await PhoneNotifier.WaitForArrival();
+                }
+
+                if (PhoneNotifier.CurrentInterface != PhoneInterfaces.Lumia_MassStorage)
+                {
+                    // TODO handle failure
+                }
+
+                MassStorage Storage = (MassStorage)PhoneNotifier.CurrentModel;
+
+                ActivateSubContext(new BusyViewModel("Patching...", UIContext: UIContext));
+
+                // Edit BCD
+                LogFile.Log("Edit BCD");
+                using (Stream BCDFileStream = new System.IO.FileStream(Storage.Drive + @"\EFIESP\efi\Microsoft\Boot\BCD", FileMode.Open, FileAccess.ReadWrite))
+                {
+                    using (DiscUtils.Registry.RegistryHive BCDHive = new DiscUtils.Registry.RegistryHive(BCDFileStream))
+                    {
+                        DiscUtils.BootConfig.Store BCDStore = new DiscUtils.BootConfig.Store(BCDHive.Root);
+                        DiscUtils.BootConfig.BcdObject MobileStartupObject = BCDStore.GetObject(new Guid("{01de5a27-8705-40db-bad6-96fa5187d4a6}"));
+                        DiscUtils.BootConfig.Element NoCodeIntegrityElement = MobileStartupObject.GetElement(0x16000048);
+                        if (NoCodeIntegrityElement != null)
+                            NoCodeIntegrityElement.Value = DiscUtils.BootConfig.ElementValue.ForBoolean(true);
+                        else
+                            MobileStartupObject.AddElement(0x16000048, DiscUtils.BootConfig.ElementValue.ForBoolean(true));
+
+                        DiscUtils.BootConfig.BcdObject WinLoadObject = BCDStore.GetObject(new Guid("{7619dcc9-fafe-11d9-b411-000476eba25f}"));
+                        NoCodeIntegrityElement = WinLoadObject.GetElement(0x16000048);
+                        if (NoCodeIntegrityElement != null)
+                            NoCodeIntegrityElement.Value = DiscUtils.BootConfig.ElementValue.ForBoolean(true);
+                        else
+                            WinLoadObject.AddElement(0x16000048, DiscUtils.BootConfig.ElementValue.ForBoolean(true));
+                    }
+                }
+
+                App.PatchEngine.TargetPath = Storage.Drive + @"\EFIESP\";
+                bool PatchResult = App.PatchEngine.Patch("SecureBootHack-V1.1-EFIESP");
+                if (!PatchResult)
+                {
+                    // Phone doesn't have a compatible mobilestartup.efi file for our patches
+                    // If a supported FFU was provided, we're going to rename the current efi file to back it up
+                    // and take the one from the FFU instead
+                    // If no supported FFU was provided, we're going to skip that part. (The user can enable the hacks via Root Access later)
+
+                    if (FFUPath == null)
+                        throw new ArgumentNullException("FFU path is missing");
+
+                    LogFile.Log("Donor-FFU: " + SupportedFFU.Path);
+                    byte[] SupportedEFIESP = SupportedFFU.GetPartition("EFIESP");
+                    DiscUtils.Fat.FatFileSystem SupportedEFIESPFileSystem = new DiscUtils.Fat.FatFileSystem(new MemoryStream(SupportedEFIESP));
+                    DiscUtils.SparseStream SupportedMobileStartupStream = SupportedEFIESPFileSystem.OpenFile(@"\Windows\System32\Boot\mobilestartup.efi", FileMode.Open);
+                    MemoryStream SupportedMobileStartupMemStream = new MemoryStream();
+                    SupportedMobileStartupStream.CopyTo(SupportedMobileStartupMemStream);
+                    byte[] SupportedMobileStartup = SupportedMobileStartupMemStream.ToArray();
+                    SupportedMobileStartupMemStream.Close();
+                    SupportedMobileStartupStream.Close();
+
+                    // Save supported mobilestartup.efi
+                    LogFile.Log("Taking mobilestartup.efi from donor-FFU");
+                    File.Move(Storage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi", Storage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi.bak");
+                    FileStream MobileStartupStream = File.Open(Storage.Drive + @"\EFIESP\Windows\System32\Boot\mobilestartup.efi", FileMode.Create, FileAccess.Write);
+                    MobileStartupStream.Write(SupportedMobileStartup, 0, SupportedMobileStartup.Length);
+                    MobileStartupStream.Close();
+
+                    PatchResult = App.PatchEngine.Patch("SecureBootHack-V1.1-EFIESP");
+                    if (!PatchResult)
+                    {
+                        throw new WPinternalsException("Failed to patch bootloader");
+                    }
+                }
+
+                IsSwitchingInterface = true;
+                ActivateSubContext(new BusyViewModel("You need to manually reset your phone now!", "The phone is currently in Mass Storage Mode. To continue the unlock-sequence, the phone needs to be rebooted. Keep the phone connected to the PC. Reboot the phone manually by pressing and holding the power-button and the volume-down-button of the phone for about 10 seconds until it vibrates. The unlock-sequence will resume automatically.", UIContext: UIContext, ShowAnimation: false));
+                await PhoneNotifier.WaitForRemoval();
+                ActivateSubContext(new BusyViewModel("Rebooting phone...", UIContext: UIContext));
+            }
+            else
+            {
+                // The user did not provide a SBL3 partition
+                // We thus can't switch the phone to mass storage mode
+                // Boot policies won't be disabled, but UEFI SecureBoot will still be disabled.
+                // This will still allow some insecure actions, such as debugging or nointegritychecks.
+                //
+                // So we're going to flash a partition taken from the FFU
+                //
+
+                byte[] UnlockedEFIESP = FFU.GetPartition("EFIESP");
+                DiscUtils.Fat.FatFileSystem UnlockedEFIESPFileSystem = new DiscUtils.Fat.FatFileSystem(new MemoryStream(UnlockedEFIESP));
+
+                if (SupportedFFU.Path != FFU.Path)
+                {
+                    LogFile.Log("Donor-FFU: " + SupportedFFU.Path);
+                    byte[] SupportedEFIESP = SupportedFFU.GetPartition("EFIESP");
+                    DiscUtils.Fat.FatFileSystem SupportedEFIESPFileSystem = new DiscUtils.Fat.FatFileSystem(new MemoryStream(SupportedEFIESP));
+                    DiscUtils.SparseStream SupportedMobileStartupStream = SupportedEFIESPFileSystem.OpenFile(@"\Windows\System32\Boot\mobilestartup.efi", FileMode.Open);
+                    MemoryStream SupportedMobileStartupMemStream = new MemoryStream();
+                    SupportedMobileStartupStream.CopyTo(SupportedMobileStartupMemStream);
+                    byte[] SupportedMobileStartup = SupportedMobileStartupMemStream.ToArray();
+                    SupportedMobileStartupMemStream.Close();
+                    SupportedMobileStartupStream.Close();
+
+                    // Save supported mobilestartup.efi
+                    LogFile.Log("Taking mobilestartup.efi from donor-FFU");
+                    Stream MobileStartupStream = UnlockedEFIESPFileSystem.OpenFile(@"Windows\System32\Boot\mobilestartup.efi", FileMode.Create, FileAccess.Write);
+                    MobileStartupStream.Write(SupportedMobileStartup, 0, SupportedMobileStartup.Length);
+                    MobileStartupStream.Close();
+                }
+
+                // Magic!
+                // This patch contains multiple hacks to disable SecureBoot, disable Bootpolicies and allow Mass Storage Mode on retail phones
+                App.PatchEngine.TargetImage = UnlockedEFIESPFileSystem;
+                bool PatchResult = App.PatchEngine.Patch("SecureBootHack-V1.1-EFIESP");
+                if (!PatchResult)
+                    throw new WPinternalsException("Failed to patch bootloader");
+
+                // Edit BCD
+                LogFile.Log("Edit BCD");
+                using (Stream BCDFileStream = UnlockedEFIESPFileSystem.OpenFile(@"efi\Microsoft\Boot\BCD", FileMode.Open, FileAccess.ReadWrite))
+                {
+                    using (DiscUtils.Registry.RegistryHive BCDHive = new DiscUtils.Registry.RegistryHive(BCDFileStream))
+                    {
+                        DiscUtils.BootConfig.Store BCDStore = new DiscUtils.BootConfig.Store(BCDHive.Root);
+                        DiscUtils.BootConfig.BcdObject MobileStartupObject = BCDStore.GetObject(new Guid("{01de5a27-8705-40db-bad6-96fa5187d4a6}"));
+                        DiscUtils.BootConfig.Element NoCodeIntegrityElement = MobileStartupObject.GetElement(0x16000048);
+                        if (NoCodeIntegrityElement != null)
+                            NoCodeIntegrityElement.Value = DiscUtils.BootConfig.ElementValue.ForBoolean(true);
+                        else
+                            MobileStartupObject.AddElement(0x16000048, DiscUtils.BootConfig.ElementValue.ForBoolean(true));
+
+                        DiscUtils.BootConfig.BcdObject WinLoadObject = BCDStore.GetObject(new Guid("{7619dcc9-fafe-11d9-b411-000476eba25f}"));
+                        NoCodeIntegrityElement = WinLoadObject.GetElement(0x16000048);
+                        if (NoCodeIntegrityElement != null)
+                            NoCodeIntegrityElement.Value = DiscUtils.BootConfig.ElementValue.ForBoolean(true);
+                        else
+                            WinLoadObject.AddElement(0x16000048, DiscUtils.BootConfig.ElementValue.ForBoolean(true));
+                    }
+                }
+
+                UnlockedEFIESPFileSystem.Dispose();
+
+                ActivateSubContext(new BusyViewModel("Flashing unlocked bootloader (part 2)...", MaxProgressValue: (ulong)UnlockedEFIESP.Length, UIContext: UIContext));
+                ProgressUpdater Progress = ((BusyViewModel)SubContextViewModel).ProgressUpdater;
+
+                FlashModel.FlashRawPartition(UnlockedEFIESP, "EFIESP", Progress);
+                IsSwitchingInterface = true;
+                FlashModel.ResetPhone();
+            }
+        }
+
         private void SwitchToFlashMode()
         {
             // SwitchModeViewModel must be created on the UI thread
@@ -508,7 +744,7 @@ namespace WPinternals
             }
             else
                 Key.SetValue("FFUPath", FFUPath);
-            
+
             if (LoadersPath == null)
             {
                 if (Key.GetValue("LoadersPath") != null)
@@ -528,9 +764,6 @@ namespace WPinternals
                     Key.SetValue("SBL3Path", SBL3Path);
             }
 
-            NokiaFlashModel Model = (NokiaFlashModel)PhoneNotifier.CurrentModel;
-            PhoneInfo Info = Model.ReadPhoneInfo();
-
             if (ProfileFFUPath == null)
             {
                 if (Key.GetValue("ProfileFFUPath") != null)
@@ -543,16 +776,22 @@ namespace WPinternals
                 App.Config.AddFfuToRepository(ProfileFFUPath);
             }
 
-            if (EDEPath == null)
+            if (PhoneNotifier.CurrentInterface != PhoneInterfaces.Qualcomm_Download && PhoneNotifier.CurrentInterface != PhoneInterfaces.Qualcomm_Flash)
             {
-                if (Key.GetValue("EDEPath") != null)
-                    Key.DeleteValue("EDEPath");
-            }
-            else
-            {
-                Key.SetValue("EDEPath", EDEPath);
+                NokiaFlashModel Model = (NokiaFlashModel)PhoneNotifier.CurrentModel;
+                PhoneInfo Info = Model.ReadPhoneInfo();
 
-                App.Config.AddEmergencyToRepository(Info.Type, EDEPath, null);
+                if (EDEPath == null)
+                {
+                    if (Key.GetValue("EDEPath") != null)
+                        Key.DeleteValue("EDEPath");
+                }
+                else
+                {
+                    Key.SetValue("EDEPath", EDEPath);
+
+                    App.Config.AddEmergencyToRepository(Info.Type, EDEPath, null);
+                }
             }
 
             if (SupportedFFUPath != null)
@@ -582,7 +821,8 @@ namespace WPinternals
         internal void ExitMessage(string Message, string SubMessage)
         {
             // SecureBoot Unlock v2 is done. Reactivate phone arrival events.
-            MessageViewModel SuccessMessageViewModel = new MessageViewModel(Message, () => {
+            MessageViewModel SuccessMessageViewModel = new MessageViewModel(Message, () =>
+            {
                 State = MachineState.Default;
                 Exit();
             });
@@ -623,6 +863,19 @@ namespace WPinternals
                 throw new Exception("Error: Parsing FFU-file failed.");
             }
 
+            if (SupportedFFU != null)
+            {
+                try
+                {
+                    SupportedFFU = new FFU(SupportedFFUPath);
+                }
+                catch (Exception Ex)
+                {
+                    LogFile.LogException(Ex);
+                    throw new Exception("Error: Parsing Supported FFU-file failed.");
+                }
+            }
+
             if (DumpPartitions)
             {
                 try
@@ -661,6 +914,23 @@ namespace WPinternals
                     throw new Exception("Error: Parsing partitions failed.");
                 }
 
+                if (SBL3Path != null)
+                {
+                    Partition IsUnlockedFlag = NewGPT.GetPartition("IS_UNLOCKED_SBL3");
+                    if (IsUnlockedFlag == null)
+                    {
+                        IsUnlockedFlag = new Partition();
+                        IsUnlockedFlag.Name = "IS_UNLOCKED_SBL3";
+                        IsUnlockedFlag.Attributes = 0;
+                        IsUnlockedFlag.PartitionGuid = Guid.NewGuid();
+                        IsUnlockedFlag.PartitionTypeGuid = Guid.NewGuid();
+                        IsUnlockedFlag.FirstSector = 0x40;
+                        IsUnlockedFlag.LastSector = 0x40;
+                        NewGPT.Partitions.Add(IsUnlockedFlag);
+                        this.GPT = NewGPT.Rebuild();
+                    }
+                }
+
                 if (DumpPartitions)
                 {
                     try
@@ -677,6 +947,25 @@ namespace WPinternals
             else
             {
                 NewGPT.RemoveHack();
+
+                HasSBL3 = false;
+                Partition IsUnlockedFlag = NewGPT.GetPartition("IS_UNLOCKED_SBL3");
+                if (IsUnlockedFlag != null)
+                {
+                    NewGPT.Partitions.Remove(IsUnlockedFlag);
+                    HasSBL3 = true;
+                }
+
+                Partition NvBackupPartition = NewGPT.GetPartition("BACKUP_BS_NV");
+                if (NvBackupPartition != null)
+                {
+                    Partition NvPartition = NewGPT.GetPartition("UEFI_BS_NV");
+                    NvBackupPartition.Name = "UEFI_BS_NV";
+                    NvBackupPartition.PartitionGuid = NvPartition.PartitionGuid;
+                    NvBackupPartition.PartitionTypeGuid = NvPartition.PartitionTypeGuid;
+                    NewGPT.Partitions.Remove(NvPartition);
+                }
+
                 this.GPT = NewGPT.Rebuild();
             }
 
@@ -807,7 +1096,7 @@ namespace WPinternals
                     }
                 }
             }
-    
+
             SBL3 SBL3;
             SBL3 OriginalSBL3;
 
@@ -889,7 +1178,7 @@ namespace WPinternals
                 this.SBL3 = SBL3.Binary;
             }
 
-            UEFI UEFI = null; 
+            UEFI UEFI = null;
             try
             {
                 UEFI = new UEFI(FFU.GetPartition("UEFI"));
@@ -1005,21 +1294,6 @@ namespace WPinternals
             EvaluateViewState();
         }
 
-        private void RecoverFromFlashMode()
-        {
-            IsSwitchingInterface = true;
-            LogFile.Log("Recover from Flash-mode");
-
-            // Flash dummy sector (only allowed when phone is authenticated)
-            byte[] EmptySector = new byte[0x200];
-            Array.Clear(EmptySector, 0, 0x200);
-            ((NokiaFlashModel)PhoneNotifier.CurrentModel).FlashSectors(0x22, EmptySector);
-
-            // Reboot to Qualcomm Emergency mode
-            byte[] RebootCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x52 }; // NOKR
-            ((NokiaFlashModel)PhoneNotifier.CurrentModel).ExecuteRawVoidMethod(RebootCommand);
-        }
-
         // Expected to be launched on worker-thread.
         internal void FlashBootLoader()
         {
@@ -1044,7 +1318,7 @@ namespace WPinternals
 
                 try
                 {
-                    EvaluateResources(Emergency:true);
+                    EvaluateResources(Emergency: true);
                 }
                 catch (Exception Ex)
                 {
@@ -1068,7 +1342,7 @@ namespace WPinternals
                 NewGPT.GetPartition("WINSECAPP").SizeInSectors;
 
             if (DoUnlock)
-                ActivateSubContext(new BusyViewModel("Flashing unlocked bootloader...", MaxProgressValue: TotalSectorCount, UIContext: UIContext));
+                ActivateSubContext(new BusyViewModel("Flashing unlocked bootloader (part 1)...", MaxProgressValue: TotalSectorCount, UIContext: UIContext));
             else
                 ActivateSubContext(new BusyViewModel("Flashing original bootloader...", MaxProgressValue: TotalSectorCount, UIContext: UIContext));
 
@@ -1093,7 +1367,7 @@ namespace WPinternals
 
             LogFile.Log("Flash GPT at 0x" + ((UInt32)0x200).ToString("X8"));
             Flasher.Flash(0x200, GPT, Progress, 0, 0x41FF); // Bad bounds-check in the flash-loader prohibits to write the last byte.
-            
+
             LogFile.Log("Flash SBL2 at 0x" + ((UInt32)NewGPT.GetPartition("SBL2").FirstSector * 0x200).ToString("X8"));
             Flasher.Flash((uint)NewGPT.GetPartition("SBL2").FirstSector * 0x200, SBL2, Progress);
             LogFile.Log("Flash SBL3 at 0x" + ((UInt32)NewGPT.GetPartition("SBL3").FirstSector * 0x200).ToString("X8"));
@@ -1108,7 +1382,7 @@ namespace WPinternals
             Flasher.Flash((uint)NewGPT.GetPartition("TZ").FirstSector * 0x200, FFU.GetPartition("TZ"), Progress);
             LogFile.Log("Flash RPM at 0x" + ((UInt32)NewGPT.GetPartition("RPM").FirstSector * 0x200).ToString("X8"));
             Flasher.Flash((uint)NewGPT.GetPartition("RPM").FirstSector * 0x200, FFU.GetPartition("RPM"), Progress);
-            
+
             // Workaround for bad bounds-check in flash-loader
             UInt32 Length = (UInt32)FFU.GetPartition("WINSECAPP").Length;
             UInt32 Start = (UInt32)NewGPT.GetPartition("WINSECAPP").FirstSector * 0x200;
@@ -1129,10 +1403,16 @@ namespace WPinternals
         }
 
         // Expected to be launched on worker-thread.
-        internal void CustomFlashBootLoader()
+        internal async void CustomFlashBootLoader()
         {
             IsSwitchingInterface = true;
+
             LogFile.Log("Start flashing in Custom Flash mode");
+
+            if (!DoUnlock && !((NokiaFlashModel)PhoneNotifier.CurrentModel).ReadSecurityStatus().UefiSecureBootStatus)
+            {
+                await RestoreBootLoaderUEFI(HasSBL3);
+            }
 
             NokiaFlashModel CurrentModel = (NokiaFlashModel)PhoneNotifier.CurrentModel;
 
@@ -1142,7 +1422,7 @@ namespace WPinternals
                 (UInt64)(UEFI.Length / 0x200);
 
             if (DoUnlock)
-                ActivateSubContext(new BusyViewModel("Flashing unlocked bootloader...", MaxProgressValue: TotalSectorCount, UIContext: UIContext));
+                ActivateSubContext(new BusyViewModel("Flashing unlocked bootloader (part 1)...", MaxProgressValue: TotalSectorCount, UIContext: UIContext));
             else
                 ActivateSubContext(new BusyViewModel("Flashing original bootloader...", MaxProgressValue: TotalSectorCount, UIContext: UIContext));
 
@@ -1167,9 +1447,89 @@ namespace WPinternals
 
             IsFlashingDone = true;
 
-            ActivateSubContext(new BusyViewModel("Flashing done. Rebooting..."));
-            byte[] RebootCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x52 }; // NOKR
-            CurrentModel.ExecuteRawVoidMethod(RebootCommand);
+            if (DoUnlock && SBL3Path != null)
+            {
+                FlashUnlockedBootLoaderPart2();
+            }
+            else
+            {
+                ActivateSubContext(new BusyViewModel("Flashing done. Rebooting..."));
+                byte[] RebootCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x52 }; // NOKR
+                CurrentModel.ExecuteRawVoidMethod(RebootCommand);
+            }
+        }
+
+        private async Task RestoreBootLoaderUEFI(bool hasSBL3)
+        {
+            NokiaFlashModel FlashModel = (NokiaFlashModel)PhoneNotifier.CurrentModel;
+
+            if (HasSBL3)
+            {
+                byte[] BootModeFlagCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x58, 0x46, 0x57, 0x00, 0x55, 0x42, 0x46, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00 }; // NOKFW UBF
+                byte[] RebootCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x52 };
+                byte[] RebootToMassStorageCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x4D }; // NOKM
+                byte[] RebootCommandResult = FlashModel.ExecuteRawMethod(RebootToMassStorageCommand);
+                if ((RebootCommandResult != null) && (RebootCommandResult.Length == 4)) // This means fail: NOKU (unknow command)
+                {
+                    // TODO handle failure
+                }
+                else
+                {
+                    string MassStorageWarning = "Switching to Mass Storage mode should take about 10 seconds. The phone should be unlocked using an Engineering SBL3 to enable Mass Storage mode. When you unlocked the bootloader, but you did not use an Engineering SBL3, an attempt to boot to Mass Storage mode may result in an unresponsive state. Installing drivers for this interface may also cause to hang the PC. So when this switch is taking too long, you should reboot both the PC and the phone. To reboot the phone, you have to perform a soft-reset. Press and hold the volume-down-button and the power-button at the same time for at least 10 seconds. This will trigger a power-cycle and the phone will reboot. Once fully booted, the phone may show strange behavior, like complaining about mail-accounts, showing old text-messages, inability to load https-websites, etc. This is expected behavior, because the time-settings of the phone are incorrect. Just wait a few seconds for the phone to get a data-connection and have the date/time synced. After that the strange behavior will stop automatically and normal operation is resumed.";
+                    ActivateSubContext(new BusyViewModel("Switching to Mass Storage Mode...", MassStorageWarning, UIContext: UIContext));
+                    LogFile.Log("Rebooting phone to Mass Storage mode");
+                    await PhoneNotifier.WaitForArrival();
+                }
+
+                if (PhoneNotifier.CurrentInterface != PhoneInterfaces.Lumia_MassStorage)
+                {
+                    // TODO handle failure
+                }
+
+                MassStorage Storage = (MassStorage)PhoneNotifier.CurrentModel;
+
+                ActivateSubContext(new BusyViewModel("Patching...", UIContext: UIContext));
+
+                // Edit BCD
+                LogFile.Log("Edit BCD");
+                using (Stream BCDFileStream = new System.IO.FileStream(Storage.Drive + @"\EFIESP\efi\Microsoft\Boot\BCD", FileMode.Open, FileAccess.ReadWrite))
+                {
+                    using (DiscUtils.Registry.RegistryHive BCDHive = new DiscUtils.Registry.RegistryHive(BCDFileStream))
+                    {
+                        DiscUtils.BootConfig.Store BCDStore = new DiscUtils.BootConfig.Store(BCDHive.Root);
+                        DiscUtils.BootConfig.BcdObject MobileStartupObject = BCDStore.GetObject(new Guid("{01de5a27-8705-40db-bad6-96fa5187d4a6}"));
+                        DiscUtils.BootConfig.Element NoCodeIntegrityElement = MobileStartupObject.GetElement(0x16000048);
+                        if (NoCodeIntegrityElement != null)
+                            MobileStartupObject.RemoveElement(0x16000048);
+
+                        DiscUtils.BootConfig.BcdObject WinLoadObject = BCDStore.GetObject(new Guid("{7619dcc9-fafe-11d9-b411-000476eba25f}"));
+                        NoCodeIntegrityElement = WinLoadObject.GetElement(0x16000048);
+                        if (NoCodeIntegrityElement != null)
+                            WinLoadObject.RemoveElement(0x16000048);
+                    }
+                }
+
+                App.PatchEngine.TargetPath = Storage.Drive + @"\EFIESP\";
+                App.PatchEngine.Restore("SecureBootHack-V1.1-EFIESP");
+
+                IsSwitchingInterface = true;
+                ActivateSubContext(new BusyViewModel("You need to manually reset your phone now!", "The phone is currently in Mass Storage Mode. To continue the unlock-sequence, the phone needs to be rebooted. Keep the phone connected to the PC. Reboot the phone manually by pressing and holding the power-button and the volume-down-button of the phone for about 10 seconds until it vibrates. The unlock-sequence will resume automatically.", UIContext: UIContext, ShowAnimation: false));
+                State = MachineState.LumiaSpecARelock;
+                await PhoneNotifier.WaitForRemoval();
+                ActivateSubContext(new BusyViewModel("Rebooting phone...", UIContext: UIContext));
+                await PhoneNotifier.WaitForArrival();
+                await SwitchModeViewModel.SwitchTo(PhoneNotifier, PhoneInterfaces.Lumia_Flash);
+                State = MachineState.Default;
+            }
+            else
+            {
+                byte[] EFIESP = FFU.GetPartition("EFIESP");
+
+                ActivateSubContext(new BusyViewModel("Flashing...", MaxProgressValue: (ulong)EFIESP.Length, UIContext: UIContext));
+                ProgressUpdater Progress = ((BusyViewModel)SubContextViewModel).ProgressUpdater;
+
+                FlashModel.FlashRawPartition(EFIESP, "EFIESP", Progress);
+            }
         }
     }
 
@@ -1185,13 +1545,13 @@ namespace WPinternals
     internal class BootRestoreResourcesViewModel : FlashResourcesViewModel
     {
         internal BootRestoreResourcesViewModel(string CurrentMode, byte[] RootKeyHash, Action SwitchToFlashRom, Action SwitchToUndoRoot, Action SwitchToDownload, Action<string, string, string, string, string, string, bool> Result, Action Abort, bool IsBootLoaderUnlocked, bool TargetHasNewFlashProtocol, string PlatformID = null, string ProductType = null)
-            : base(CurrentMode, RootKeyHash, SwitchToFlashRom, SwitchToUndoRoot, SwitchToDownload, Result, Abort, IsBootLoaderUnlocked, TargetHasNewFlashProtocol, PlatformID, ProductType) 
+            : base(CurrentMode, RootKeyHash, SwitchToFlashRom, SwitchToUndoRoot, SwitchToDownload, Result, Abort, IsBootLoaderUnlocked, TargetHasNewFlashProtocol, PlatformID, ProductType)
         {
             SBL3Path = null;
         }
     }
 
-    internal class FlashResourcesViewModel: ContextViewModel
+    internal class FlashResourcesViewModel : ContextViewModel
     {
         internal Action SwitchToFlashRom;
         internal Action SwitchToUndoRoot;
@@ -1200,7 +1560,7 @@ namespace WPinternals
         private string ProductType;
         private string ValidatedSupportedFfuPath = null;
 
-        internal FlashResourcesViewModel(string CurrentMode, byte[] RootKeyHash, Action SwitchToFlashRom, Action SwitchToUndoRoot, Action SwitchToDownload, Action<string, string, string, string, string, string, bool> Result, Action Abort, bool IsBootLoaderUnlocked, bool TargetHasNewFlashProtocol, string PlatformID = null, string ProductType = null): base()
+        internal FlashResourcesViewModel(string CurrentMode, byte[] RootKeyHash, Action SwitchToFlashRom, Action SwitchToUndoRoot, Action SwitchToDownload, Action<string, string, string, string, string, string, bool> Result, Action Abort, bool IsBootLoaderUnlocked, bool TargetHasNewFlashProtocol, string PlatformID = null, string ProductType = null) : base()
         {
             IsSwitchingInterface = true;
             this.CurrentMode = CurrentMode;
@@ -1212,7 +1572,7 @@ namespace WPinternals
             this.SwitchToDownload = SwitchToDownload;
             this.IsBootLoaderUnlocked = IsBootLoaderUnlocked;
             OkCommand = new DelegateCommand(() => Result(FFUPath, LoadersPath, SBL3Path, ProfileFFUPath, EDEPath, IsSupportedFfuNeeded ? SupportedFFUPath : null, false),
-                () => (!TargetHasNewFlashProtocol || ((ProfileFFUPath != null)  &&  (!IsSupportedFfuNeeded || (IsSupportedFfuValid && (SupportedFFUPath != null))))));
+                () => (!TargetHasNewFlashProtocol && (!IsSupportedFfuNeeded || (IsSupportedFfuValid && (SupportedFFUPath != null))) || ((ProfileFFUPath != null) && (!IsSupportedFfuNeeded || (IsSupportedFfuValid && (SupportedFFUPath != null))))));
             FixCommand = new DelegateCommand(() => Result(null, null, null, null, null, null, true));
             CancelCommand = new DelegateCommand(Abort);
             this.TargetHasNewFlashProtocol = TargetHasNewFlashProtocol;
@@ -1318,61 +1678,124 @@ namespace WPinternals
 
         private void SetSupportedFFUPath()
         {
-            if ((this is BootRestoreResourcesViewModel) || (_ProfileFFUPath == null))
+            if (!TargetHasNewFlashProtocol)
             {
-                IsSupportedFfuNeeded = false;
-                return;
-            }
-
-            try
-            {
-                FFU ProfileFFU = new FFU(_ProfileFFUPath);
-                IsSupportedFfuNeeded = !(App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == ProfileFFU.GetOSVersion()));
-            }
-            catch
-            {
-                IsSupportedFfuNeeded = false;
-                return;
-            }
-
-            if (IsSupportedFfuNeeded)
-            {
-                FFU SupportedFFU;
-
-                try
+                if (this is BootRestoreResourcesViewModel)
                 {
-                    if (_SupportedFFUPath != null)
-                    {
-                        SupportedFFU = new FFU(_SupportedFFUPath);
-                        if (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == SupportedFFU.GetOSVersion()))
-                            return;
-                    }
+                    IsSupportedFfuNeeded = false;
+                    return;
                 }
-                catch { }
 
                 try
                 {
-                    string TempSupportedFFUPath = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "SupportedFFUPath", null);
-                    if (TempSupportedFFUPath != null)
+                    FFU FFU = new FFU(_FFUPath);
+                    IsSupportedFfuNeeded = !(App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V1.1-EFIESP").First().TargetVersions.Any(v => v.Description == FFU.GetOSVersion()));
+                }
+                catch
+                {
+                    IsSupportedFfuNeeded = false;
+                    return;
+                }
+
+                if (IsSupportedFfuNeeded)
+                {
+                    FFU SupportedFFU;
+
+                    try
                     {
-                        SupportedFFU = new FFU(TempSupportedFFUPath);
-                        if (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == SupportedFFU.GetOSVersion()))
+                        if (_SupportedFFUPath != null)
                         {
-                            ValidatedSupportedFfuPath = TempSupportedFFUPath;
-                            SupportedFFUPath = TempSupportedFFUPath;
-                            IsSupportedFfuValid = true;
-                            return;
+                            SupportedFFU = new FFU(_SupportedFFUPath);
+                            if (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V1.1-EFIESP").First().TargetVersions.Any(v => v.Description == SupportedFFU.GetOSVersion()))
+                                return;
                         }
                     }
-                }
-                catch { }
+                    catch { }
 
-                List<FFUEntry> FFUs = App.Config.FFURepository.Where(e => App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == e.OSVersion)).ToList();
-                if (FFUs.Count() > 0)
+                    try
+                    {
+                        string TempSupportedFFUPath = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "SupportedFFUPath", null);
+                        if (TempSupportedFFUPath != null)
+                        {
+                            SupportedFFU = new FFU(TempSupportedFFUPath);
+                            if (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V1.1-EFIESP").First().TargetVersions.Any(v => v.Description == SupportedFFU.GetOSVersion()))
+                            {
+                                ValidatedSupportedFfuPath = TempSupportedFFUPath;
+                                SupportedFFUPath = TempSupportedFFUPath;
+                                IsSupportedFfuValid = true;
+                                return;
+                            }
+                        }
+                    }
+                    catch { }
+
+                    List<FFUEntry> FFUs = App.Config.FFURepository.Where(e => App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V1.1-EFIESP").First().TargetVersions.Any(v => v.Description == e.OSVersion)).ToList();
+                    if (FFUs.Count() > 0)
+                    {
+                        ValidatedSupportedFfuPath = FFUs[0].Path;
+                        SupportedFFUPath = FFUs[0].Path;
+                        IsSupportedFfuValid = true;
+                    }
+                }
+            }
+            else
+            {
+                if ((this is BootRestoreResourcesViewModel) || (_ProfileFFUPath == null))
                 {
-                    ValidatedSupportedFfuPath = FFUs[0].Path;
-                    SupportedFFUPath = FFUs[0].Path;
-                    IsSupportedFfuValid = true;
+                    IsSupportedFfuNeeded = false;
+                    return;
+                }
+
+                try
+                {
+                    FFU ProfileFFU = new FFU(_ProfileFFUPath);
+                    IsSupportedFfuNeeded = !(App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == ProfileFFU.GetOSVersion()));
+                }
+                catch
+                {
+                    IsSupportedFfuNeeded = false;
+                    return;
+                }
+
+                if (IsSupportedFfuNeeded)
+                {
+                    FFU SupportedFFU;
+
+                    try
+                    {
+                        if (_SupportedFFUPath != null)
+                        {
+                            SupportedFFU = new FFU(_SupportedFFUPath);
+                            if (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == SupportedFFU.GetOSVersion()))
+                                return;
+                        }
+                    }
+                    catch { }
+
+                    try
+                    {
+                        string TempSupportedFFUPath = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "SupportedFFUPath", null);
+                        if (TempSupportedFFUPath != null)
+                        {
+                            SupportedFFU = new FFU(TempSupportedFFUPath);
+                            if (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == SupportedFFU.GetOSVersion()))
+                            {
+                                ValidatedSupportedFfuPath = TempSupportedFFUPath;
+                                SupportedFFUPath = TempSupportedFFUPath;
+                                IsSupportedFfuValid = true;
+                                return;
+                            }
+                        }
+                    }
+                    catch { }
+
+                    List<FFUEntry> FFUs = App.Config.FFURepository.Where(e => App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == e.OSVersion)).ToList();
+                    if (FFUs.Count() > 0)
+                    {
+                        ValidatedSupportedFfuPath = FFUs[0].Path;
+                        SupportedFFUPath = FFUs[0].Path;
+                        IsSupportedFfuValid = true;
+                    }
                 }
             }
         }
@@ -1387,20 +1810,43 @@ namespace WPinternals
                 }
                 else
                 {
-                    if (App.Config.FFURepository.Any(e => ((e.Path == SupportedFFUPath) && (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == e.OSVersion)))))
+
+                    if (!TargetHasNewFlashProtocol)
                     {
-                        IsSupportedFfuValid = true;
-                    }
-                    else
-                    {
-                        FFU SupportedFFU = new FFU(SupportedFFUPath);
-                        if (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == SupportedFFU.GetOSVersion()))
+                        if (App.Config.FFURepository.Any(e => ((e.Path == SupportedFFUPath) && (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V1.1-EFIESP").First().TargetVersions.Any(v => v.Description == e.OSVersion)))))
                         {
                             IsSupportedFfuValid = true;
                         }
                         else
                         {
-                            IsSupportedFfuValid = false;
+                            FFU SupportedFFU = new FFU(SupportedFFUPath);
+                            if (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V1.1-EFIESP").First().TargetVersions.Any(v => v.Description == SupportedFFU.GetOSVersion()))
+                            {
+                                IsSupportedFfuValid = true;
+                            }
+                            else
+                            {
+                                IsSupportedFfuValid = false;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (App.Config.FFURepository.Any(e => ((e.Path == SupportedFFUPath) && (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == e.OSVersion)))))
+                        {
+                            IsSupportedFfuValid = true;
+                        }
+                        else
+                        {
+                            FFU SupportedFFU = new FFU(SupportedFFUPath);
+                            if (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == SupportedFFU.GetOSVersion()))
+                            {
+                                IsSupportedFfuValid = true;
+                            }
+                            else
+                            {
+                                IsSupportedFfuValid = false;
+                            }
                         }
                     }
                 }
@@ -1498,6 +1944,8 @@ namespace WPinternals
             {
                 _FFUPath = value;
                 OnPropertyChanged("FFUPath");
+                SetSupportedFFUPath();
+                OkCommand.RaiseCanExecuteChanged();
             }
         }
 
