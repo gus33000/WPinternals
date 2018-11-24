@@ -407,10 +407,8 @@ namespace WPinternals
                 PhoneInfo Info = FlashModel.ReadPhoneInfo();
 
                 byte[] Data = System.IO.File.ReadAllBytes(DataPath);
-
-                await Task.Run(() => FlashModel.FlashSectors((UInt32)StartSector, Data));
-
-                //await LumiaV2CustomFlash(Notifier, FFUPath, false, false, (UInt32)StartSector, Data, DoResetFirst);
+                
+                await LumiaV2CustomFlash(Notifier, FFUPath, false, false, (UInt32)StartSector, Data, DoResetFirst);
                 Notifier.Stop();
             }
             catch (Exception Ex)
