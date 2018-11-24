@@ -485,16 +485,7 @@ namespace WPinternals
                 }
             }
         }
-
-        internal static void LumiaFlashParts(PhoneNotifierViewModel Notifier, List<FlashPart> FlashParts)
-        {
-            NokiaFlashModel FlashModel = (NokiaFlashModel)Notifier.CurrentModel;
-
-            foreach (FlashPart Part in FlashParts)
-                using (BinaryReader bin = new BinaryReader(Part.Stream))
-                    FlashModel.FlashSectors(Part.StartSector, bin.ReadBytes((int)Part.Stream.Length));
-        }
-
+        
         private void SwitchToFlashMode()
         {
             // SwitchModeViewModel must be created on the UI thread
