@@ -562,6 +562,9 @@
   <PropertyGroup>
     <AssemblyOriginatorKeyFile>Heathcliff74.snk</AssemblyOriginatorKeyFile>
   </PropertyGroup>
+  <PropertyGroup>
+    <SignAssembly>true</SignAssembly>
+  </PropertyGroup>
   <ItemGroup>
     <Reference Include="Newtonsoft.Json, Version=9.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
@@ -928,6 +931,7 @@
     <Compile Include="ViewModels\BusyViewModel.cs" />
     <Compile Include="ViewModels\DisclaimerAndNdaViewModel.cs" />
     <Compile Include="ViewModels\DownloadsViewModel.cs" />
+    <Compile Include="ViewModels\LumiaUnlockBootloaderViewModel.cs" />
     <Compile Include="ViewModels\RegistrationViewModel.cs" />
     <Compile Include="ViewModels\DisclaimerViewModel.cs" />
     <Compile Include="ViewModels\DumpRomTargetSelectionViewModel.cs" />

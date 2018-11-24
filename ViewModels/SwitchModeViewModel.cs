@@ -608,7 +608,7 @@ namespace WPinternals
             if (IsNewLumia)
             {
                 GPT GPT = FlashModel.ReadGPT();
-                IsUnlockedNew = ((GPT.GetPartition("IS_UNLOCKED") != null) || (GPT.GetPartition("BACKUP_EFIESP") != null));
+                IsUnlockedNew = ((GPT.GetPartition("IS_UNLOCKED") != null) || (GPT.GetPartition("BACKUP_EFIESP") != null) || (GPT.GetPartition("BACKUP_BS_NV") != null));
             }
             bool IsOriginalEngineeringLumia = ((!Info.SecureFfuEnabled || Info.Authenticated || Info.RdcPresent) && !IsUnlockedNew);
 
