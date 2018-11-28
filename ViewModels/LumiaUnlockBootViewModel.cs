@@ -167,9 +167,13 @@ namespace WPinternals
                                 // This action is executed after the resources are selected by the user.
                                 Action<string, string, string, string, string, string, bool> ReturnFunction = (FFUPath, LoadersPath, SBL3Path, ProfileFFUPath, EDEPath, SupportedFFUPath, DoFixBoot) =>
                                 {
-                                        // This is a callback on the UI thread
-                                        // Resources are confirmed by user
-                                        this.FFUPath = FFUPath;
+                                    // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
+                                    IsSwitchingInterface = true;
+                                    State = MachineState.LumiaSpecBUnlockBoot;
+
+                                    // This is a callback on the UI thread
+                                    // Resources are confirmed by user
+                                    this.FFUPath = FFUPath;
                                     this.LoadersPath = LoadersPath;
                                     this.SBL3Path = SBL3Path;
                                     this.SupportedFFUPath = SupportedFFUPath;
@@ -184,10 +188,6 @@ namespace WPinternals
                                         LogFile.Log("SBL3: " + SBL3Path);
 
                                     ActivateSubContext(new BusyViewModel("Processing resources..."));
-
-                                        // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
-                                        IsSwitchingInterface = true;
-                                    State = MachineState.LumiaSpecBUnlockBoot;
 
                                     if (DoUnlock)
                                     {
@@ -231,6 +231,7 @@ namespace WPinternals
                                 // This action is executed after the resources are selected by the user.
                                 Action<string, string, string, string, string, string, bool> ReturnFunction = (FFUPath, LoadersPath, SBL3Path, ProfileFFUPath, EDEPath, SupportedFFUPath, DoFixBoot) =>
                                 {
+                                    IsSwitchingInterface = true;
                                     State = MachineState.LumiaSpecBUnlockBoot;
                                     if (DoUnlock)
                                     {
@@ -310,6 +311,7 @@ namespace WPinternals
                         // This action is executed after the user selected the resources.
                         Action<string, string, string, string, string, string, bool> ReturnFunctionD = (FFUPath, LoadersPath, SBL3Path, ProfileFFUPath, EDEPath, SupportedFFUPath, DoFixBoot) =>
                         {
+                            IsSwitchingInterface = true;
                             State = MachineState.LumiaSpecBUnlockBoot;
                             // This is a callback on the UI thread
                             // Resources are confirmed by user

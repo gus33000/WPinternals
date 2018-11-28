@@ -113,8 +113,6 @@ namespace WPinternals
             if (ExitSuccess == null) ExitSuccess = (m, s) => { };
             if (ExitFailure == null) ExitFailure = (m, s) => { };
 
-            await LumiaUnlockBootloaderViewModel.LumiaRelockUEFI(Notifier, FFUPath, true, SetWorkingStatus, UpdateWorkingStatus, ExitSuccess, ExitFailure);
-
             try
             {
                 LogFile.Log("Assembling data for relock", LogType.FileAndConsole);
@@ -170,9 +168,23 @@ namespace WPinternals
                 GPT NewGPT = null;
                 if (Notifier.CurrentModel is NokiaFlashModel)
                 {
-                    await SwitchModeViewModel.SwitchTo(Notifier, PhoneInterfaces.Lumia_Bootloader);
+                    ((NokiaFlashModel)Notifier.CurrentModel).ResetPhone();
+
+                    if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Bootloader)
+                        await Notifier.WaitForArrival();
+
+                    if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Bootloader)
+                        throw new WPinternalsException("Phone is in an unexpected mode.");
+
                     NewGPT = ((NokiaFlashModel)Notifier.CurrentModel).ReadGPT();
+
                     await SwitchModeViewModel.SwitchTo(Notifier, PhoneInterfaces.Lumia_Flash);
+
+                    if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Flash)
+                        await Notifier.WaitForArrival();
+
+                    if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Flash)
+                        throw new WPinternalsException("Phone is in an unexpected mode.");
                 }
                 else
                 {
@@ -185,7 +197,8 @@ namespace WPinternals
                 byte[] GPT = null;
                 try
                 {
-                    GPT = NewGPT.RemoveHack();
+                    NewGPT.RemoveHack();
+                    GPT = NewGPT.Rebuild();
                 }
                 catch (Exception Ex)
                 {
@@ -362,6 +375,10 @@ namespace WPinternals
                         throw new Exception("Error: Unexpected error during scanning for loaders.");
                     }
                 }
+
+
+                await LumiaUnlockBootloaderViewModel.LumiaRelockUEFI(Notifier, FFUPath, true, SetWorkingStatus, UpdateWorkingStatus, ExitSuccess, ExitFailure);
+
 
                 if (IsBootLoaderUnlocked)
                 // Flash phone in Flash app
@@ -606,7 +623,34 @@ namespace WPinternals
                     }
                 }
 
+
                 GPT NewGPT = null;
+                if (Notifier.CurrentModel is NokiaFlashModel)
+                {
+                    ((NokiaFlashModel)Notifier.CurrentModel).ResetPhone();
+
+                    if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Bootloader)
+                        await Notifier.WaitForArrival();
+
+                    if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Bootloader)
+                        throw new WPinternalsException("Phone is in an unexpected mode.");
+                    
+                    NewGPT = ((NokiaFlashModel)Notifier.CurrentModel).ReadGPT();
+
+                    await SwitchModeViewModel.SwitchTo(Notifier, PhoneInterfaces.Lumia_Flash);
+
+                    if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Flash)
+                        await Notifier.WaitForArrival();
+
+                    if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Flash)
+                        throw new WPinternalsException("Phone is in an unexpected mode.");
+                }
+                else
+                {
+                    NewGPT = FFU.GPT;
+                }
+                
+                /*GPT NewGPT = null;
                 if (Notifier.CurrentModel is NokiaFlashModel)
                 {
                     await SwitchModeViewModel.SwitchTo(Notifier, PhoneInterfaces.Lumia_Bootloader);
@@ -616,7 +660,7 @@ namespace WPinternals
                 else
                 {
                     NewGPT = FFU.GPT;
-                }
+                }*/
 
                 // Make sure all partitions are in range of the emergency flasher.
                 NewGPT.RestoreBackupPartitions();
