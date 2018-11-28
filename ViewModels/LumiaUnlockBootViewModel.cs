@@ -202,26 +202,14 @@ namespace WPinternals
                         {
                             if (DoUnlock)
                             {
-                                // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
                                 IsSwitchingInterface = true;
+                                LogFile.Log("Phone detected in Flash-in-progress-mode. Escaping from Flash-mode.;");
+                                ActivateSubContext(new BusyViewModel("Escaping from Flash mode..."));
 
-                                State = MachineState.LumiaSpecBUnlockBoot;
-                                this.ProfileFFUPath = FFUPath;
-                                StorePaths();
-
-                                LogFile.Log("Unlock Bootloader");
-
-                                LogFile.Log("Processing resources:");
-                                LogFile.Log("Profile FFU: " + ProfileFFUPath);
-                                LogFile.Log("EDE file: " + EDEPath);
-                                if (SupportedFFUPath != null)
-                                    LogFile.Log("Donor-FFU with supported OS version: " + SupportedFFUPath);
-
-                                Task.Run(async () =>
+                                new Thread(() =>
                                 {
-                                    await LumiaUnlockBootloaderViewModel.LumiaUnlockUEFI(PhoneNotifier, ProfileFFUPath, EDEPath, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
-                                });
-
+                                    RecoverFromFlashMode();
+                                }).Start();
                             }
                             else
                             {
@@ -275,7 +263,20 @@ namespace WPinternals
 
                                         ActivateSubContext(new BusyViewModel("Processing resources..."));
 
-                                        new Thread(() =>
+                                        if (DoUnlock)
+                                        {
+                                            // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
+                                            IsSwitchingInterface = true;
+                                            State = MachineState.LumiaSpecBUnlockBoot;
+
+                                            Task.Run(async () =>
+                                            {
+                                                await LumiaUnlockBootloaderViewModel.LumiaV1UnlockFirmware(PhoneNotifier, FFUPath, LoadersPath, SBL3Path, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
+                                            });
+                                        }
+                                        else
+                                        {
+                                            new Thread(() =>
                                             {
                                                 bool ResourcesVerified = false;
                                                 try
@@ -303,6 +304,7 @@ namespace WPinternals
                                                         PerformSoftBrick();
                                                 }
                                             }).Start();
+                                        }
                                     };
 
                                     if (DoUnlock)
@@ -429,7 +431,20 @@ namespace WPinternals
 
                                 ActivateSubContext(new BusyViewModel("Processing resources..."));
 
-                                new Thread(() =>
+                                if (DoUnlock)
+                                {
+                                    // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
+                                    IsSwitchingInterface = true;
+                                    State = MachineState.LumiaSpecBUnlockBoot;
+
+                                    Task.Run(async () =>
+                                    {
+                                        await LumiaUnlockBootloaderViewModel.LumiaV1UnlockFirmware(PhoneNotifier, FFUPath, LoadersPath, SBL3Path, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
+                                    });
+                                }
+                                else
+                                {
+                                    new Thread(() =>
                                 {
                                     bool ResourcesVerified = false;
                                     try
@@ -450,6 +465,7 @@ namespace WPinternals
                                     if (ResourcesVerified)
                                         SendLoader();
                                 }).Start();
+                                }
                             };
 
                             if (DoUnlock)
@@ -464,17 +480,65 @@ namespace WPinternals
                             }).Start();
                         break;
                     case PhoneInterfaces.Qualcomm_Flash:
-                        new Thread(() =>
                         {
-                            FlashBootLoader();
-                        }).Start();
+                            if (DoUnlock)
+                            {
+                                IsSwitchingInterface = true;
+                                State = MachineState.LumiaSpecBUnlockBoot;
+                                ActivateSubContext(new BusyViewModel("Recovering resources..."));
+
+                                LogFile.Log("Phone was unexpectedly detected in this mode while resources were not loaded yet.");
+                                LogFile.Log("WPInternals tool probably crashed in previous session.");
+                                LogFile.Log("Trying to recover resources from the registry.");
+
+                                FFUPath = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "FFUPath", null);
+                                SupportedFFUPath = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "SupportedFFUPath", null);
+                                LoadersPath = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "LoadersPath", null);
+                                SBL3Path = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "SBL3Path", null);
+
+                                Task.Run(async () =>
+                                {
+                                    await LumiaUnlockBootloaderViewModel.LumiaV1UnlockFirmware(PhoneNotifier, FFUPath, LoadersPath, SBL3Path, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
+                                });
+                            }
+                            else
+                            {
+                                new Thread(() =>
+                                {
+                                    FlashBootLoader();
+                                }).Start();
+                            }
                         break;
+                        }
                     case PhoneInterfaces.Lumia_Bootloader:
                         IsSwitchingInterface = true;
                         if (IsFlashingDone)
                         {
-                            LogFile.Log("Booting phone");
-                            ActivateSubContext(new BusyViewModel("Booting phone..."));
+                            if (DoUnlock)
+                            {
+                                // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
+                                IsSwitchingInterface = true;
+
+                                State = MachineState.LumiaSpecBUnlockBoot;
+                                this.ProfileFFUPath = FFUPath;
+                                StorePaths();
+
+                                LogFile.Log("Unlock Bootloader");
+
+                                LogFile.Log("Processing resources:");
+                                LogFile.Log("Profile FFU: " + ProfileFFUPath);
+                                LogFile.Log("EDE file: " + EDEPath);
+                                if (SupportedFFUPath != null)
+                                    LogFile.Log("Donor-FFU with supported OS version: " + SupportedFFUPath);
+
+                                Task.Run(async () =>
+                                {
+                                    await LumiaUnlockBootloaderViewModel.LumiaUnlockUEFI(PhoneNotifier, ProfileFFUPath, EDEPath, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
+                                });
+
+                            }
+                            //LogFile.Log("Booting phone");
+                            //ActivateSubContext(new BusyViewModel("Booting phone..."));
                         }
                         break;
                     default:
@@ -485,7 +549,7 @@ namespace WPinternals
                 }
             }
         }
-        
+
         private void SwitchToFlashMode()
         {
             // SwitchModeViewModel must be created on the UI thread
@@ -742,7 +806,7 @@ namespace WPinternals
             else
             {
                 NewGPT.RemoveHack();
-                
+
                 Partition IsUnlockedFlag = NewGPT.GetPartition("IS_UNLOCKED_SBL3");
                 if (IsUnlockedFlag != null)
                 {
@@ -1087,6 +1151,43 @@ namespace WPinternals
             EvaluateViewState();
         }
 
+        private async void RecoverFromFlashMode()
+        {
+            IsSwitchingInterface = true;
+            LogFile.Log("Recover from Flash-mode");
+
+            // Flash dummy sector (only allowed when phone is authenticated)
+            byte[] EmptySector = new byte[0x200];
+            Array.Clear(EmptySector, 0, 0x200);
+            ((NokiaFlashModel)PhoneNotifier.CurrentModel).FlashSectors(0x22, EmptySector);
+
+            // Reboot to Qualcomm Emergency mode
+            byte[] RebootCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x52 }; // NOKR
+            ((NokiaFlashModel)PhoneNotifier.CurrentModel).ExecuteRawVoidMethod(RebootCommand);
+
+            await PhoneNotifier.WaitForArrival();
+
+            // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
+            IsSwitchingInterface = true;
+
+            State = MachineState.LumiaSpecBUnlockBoot;
+            this.ProfileFFUPath = FFUPath;
+            StorePaths();
+
+            LogFile.Log("Unlock Bootloader");
+
+            LogFile.Log("Processing resources:");
+            LogFile.Log("Profile FFU: " + ProfileFFUPath);
+            LogFile.Log("EDE file: " + EDEPath);
+            if (SupportedFFUPath != null)
+                LogFile.Log("Donor-FFU with supported OS version: " + SupportedFFUPath);
+
+            await Task.Run(async () =>
+            {
+                await LumiaUnlockBootloaderViewModel.LumiaUnlockUEFI(PhoneNotifier, ProfileFFUPath, EDEPath, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
+            });
+        }
+
         // Expected to be launched on worker-thread.
         internal void FlashBootLoader()
         {
@@ -1216,9 +1317,9 @@ namespace WPinternals
 
                 LogFile.Log("Profile FFU: " + ProfileFFU.Path);
 
-                await LumiaUnlockBootloaderViewModel.LumiaRelockUEFI(PhoneNotifier, ProfileFFU.Path, true, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
+                await LumiaUnlockBootloaderViewModel.LumiaRelockUEFI(PhoneNotifier, ProfileFFU.Path, true, SetWorkingStatus, UpdateWorkingStatus, null, null);
             }
-            
+
             LogFile.Log("Start flashing in Custom Flash mode");
 
             CurrentModel = (NokiaFlashModel)PhoneNotifier.CurrentModel;
@@ -1277,8 +1378,6 @@ namespace WPinternals
             }
             else
             {
-                IsSwitchingInterface = true;
-
                 ActivateSubContext(new BusyViewModel("Flashing done. Rebooting..."));
                 byte[] RebootCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x52 }; // NOKR
                 CurrentModel.ExecuteRawVoidMethod(RebootCommand);
