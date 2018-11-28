@@ -658,6 +658,8 @@ namespace WPinternals
                     throw new WPinternalsException("Phone is in an unexpected mode.");
                 }
 
+                await LumiaUnlockBootloaderViewModel.LumiaUnlockUEFI(Notifier, FFUPath, LoadersPath, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitSuccess, ExitFailure);
+
                 // Differences with unlocked:
                 //  No patch to partitions
                 //  Hack removal
