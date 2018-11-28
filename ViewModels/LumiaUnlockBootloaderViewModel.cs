@@ -104,6 +104,424 @@ namespace WPinternals
         //               in Qualcomm Dload
         //               in Qualcomm Flash
         //
+        internal static async Task LumiaV1RelockFirmware(PhoneNotifierViewModel Notifier, string FFUPath, string LoadersPath, SetWorkingStatus SetWorkingStatus = null, UpdateWorkingStatus UpdateWorkingStatus = null, ExitSuccess ExitSuccess = null, ExitFailure ExitFailure = null)
+        {
+            LogFile.BeginAction("RelockBootloader");
+
+            if (SetWorkingStatus == null) SetWorkingStatus = (m, s, v, a, st) => { };
+            if (UpdateWorkingStatus == null) UpdateWorkingStatus = (m, s, v, st) => { };
+            if (ExitSuccess == null) ExitSuccess = (m, s) => { };
+            if (ExitFailure == null) ExitFailure = (m, s) => { };
+
+            await LumiaUnlockBootloaderViewModel.LumiaRelockUEFI(Notifier, FFUPath, true, SetWorkingStatus, UpdateWorkingStatus, ExitSuccess, ExitFailure);
+
+            try
+            {
+                LogFile.Log("Assembling data for relock", LogType.FileAndConsole);
+                SetWorkingStatus("Assembling data for relock", null, null);
+
+                if ((FFUPath == null) || (FFUPath.Length == 0))
+                    throw new ArgumentNullException("FFU path is missing");
+
+                if (Notifier.CurrentInterface == PhoneInterfaces.Qualcomm_Download)
+                    if ((LoadersPath == null) || (LoadersPath.Length == 0))
+                        throw new Exception("Error: Path for Loaders is mandatory.");
+
+                bool DumpPartitions = false;
+                string DumpFilePrefix = Environment.ExpandEnvironmentVariables("%ALLUSERSPROFILE%\\WPInternals\\") + DateTime.Now.ToString("yyyy-MM-dd hh.mm.ss") + " - ";
+                bool IsBootLoaderUnlocked = false;
+
+                FFU FFU = null;
+                try
+                {
+                    FFU = new FFU(FFUPath);
+                }
+                catch (Exception Ex)
+                {
+                    LogFile.LogException(Ex);
+                    throw new Exception("Error: Parsing FFU-file failed.");
+                }
+
+                if (Notifier.CurrentModel is NokiaFlashModel)
+                {
+                    FlashVersion FlashVersion = ((NokiaFlashModel)Notifier.CurrentModel).GetFlashVersion();
+                    if (FlashVersion == null)
+                        throw new Exception("Error: The version of the Flash Application on the phone could not be determined.");
+                    if ((FlashVersion.ApplicationMajor < 1) || ((FlashVersion.ApplicationMajor == 1) && (FlashVersion.ApplicationMinor < 28)))
+                        throw new Exception("Error: The version of the Flash Application on the phone is too old. Update your phone using Windows Updates or flash a newer ROM to your phone. Then try again.");
+
+                    UefiSecurityStatusResponse SecurityStatus = ((NokiaFlashModel)Notifier.CurrentModel).ReadSecurityStatus();
+                    IsBootLoaderUnlocked = (SecurityStatus.AuthenticationStatus || SecurityStatus.RdcStatus || !SecurityStatus.SecureFfuEfuseStatus);
+                }
+
+                if (DumpPartitions)
+                {
+                    try
+                    {
+                        File.WriteAllBytes(DumpFilePrefix + "01.bin", FFU.GetSectors(0, 34)); // Original GPT
+                    }
+                    catch (Exception Ex)
+                    {
+                        LogFile.LogException(Ex);
+                        throw new Exception("Error: Writing binary for logging failed.");
+                    }
+                }
+
+                GPT NewGPT = null;
+                if (Notifier.CurrentModel is NokiaFlashModel)
+                {
+                    await SwitchModeViewModel.SwitchTo(Notifier, PhoneInterfaces.Lumia_Bootloader);
+                    NewGPT = ((NokiaFlashModel)Notifier.CurrentModel).ReadGPT();
+                    await SwitchModeViewModel.SwitchTo(Notifier, PhoneInterfaces.Lumia_Flash);
+                }
+                else
+                {
+                    NewGPT = FFU.GPT;
+                }
+
+                // Make sure all partitions are in range of the emergency flasher.
+                NewGPT.RestoreBackupPartitions();
+
+                byte[] GPT = null;
+                try
+                {
+                    GPT = NewGPT.RemoveHack();
+                }
+                catch (Exception Ex)
+                {
+                    LogFile.LogException(Ex);
+                    throw new Exception("Error: Parsing partitions failed.");
+                }
+
+                Partition IsUnlockedFlag = NewGPT.GetPartition("IS_UNLOCKED_SBL3");
+                if (IsUnlockedFlag == null)
+                {
+                    NewGPT.Partitions.Remove(IsUnlockedFlag);
+                    GPT = NewGPT.Rebuild();
+                }
+
+                if (DumpPartitions)
+                {
+                    try
+                    {
+                        File.WriteAllBytes(DumpFilePrefix + "02.bin", GPT); // Patched GPT
+                    }
+                    catch (Exception Ex)
+                    {
+                        LogFile.LogException(Ex);
+                        throw new Exception("Error: Writing binary for logging failed.");
+                    }
+                }
+
+                SBL1 SBL1 = null;
+                try
+                {
+                    SBL1 = new SBL1(FFU.GetPartition("SBL1"));
+                }
+                catch (Exception Ex)
+                {
+                    LogFile.LogException(Ex);
+                    throw new Exception("Error: Parsing SBL1 failed.");
+                }
+
+                if (DumpPartitions)
+                {
+                    try
+                    {
+                        File.WriteAllBytes(DumpFilePrefix + "03.bin", SBL1.Binary); // Original SBL1
+                    }
+                    catch (Exception Ex)
+                    {
+                        LogFile.LogException(Ex);
+                        throw new Exception("Error: Writing binary for logging failed.");
+                    }
+                }
+
+                byte[] RootKeyHash = null;
+                if (Notifier.CurrentInterface == PhoneInterfaces.Qualcomm_Download)
+                {
+                    QualcommDownload Download = new QualcommDownload((QualcommSerial)Notifier.CurrentModel);
+                    RootKeyHash = Download.GetRKH();
+                }
+                else if (Notifier.CurrentInterface != PhoneInterfaces.Qualcomm_Flash)
+                {
+                    RootKeyHash = ((NokiaFlashModel)Notifier.CurrentModel).ReadParam("RRKH");
+                }
+
+                if (Notifier.CurrentInterface != PhoneInterfaces.Qualcomm_Flash)
+                {
+                    if (RootKeyHash == null)
+                    {
+                        throw new Exception("Error: Root Key Hash could not be retrieved from the phone.");
+                    }
+                    if (SBL1.RootKeyHash == null)
+                    {
+                        throw new Exception("Error: Root Key Hash could not be retrieved from FFU file.");
+                    }
+                    if (!StructuralComparisons.StructuralEqualityComparer.Equals(RootKeyHash, SBL1.RootKeyHash))
+                    {
+                        LogFile.Log("Phone: " + Converter.ConvertHexToString(RootKeyHash, ""));
+                        LogFile.Log("SBL1: " + Converter.ConvertHexToString(SBL1.RootKeyHash, ""));
+                        throw new Exception("Error: Root Key Hash from phone and from FFU file do not match!");
+                    }
+                }
+
+                SBL2 SBL2Partition = null;
+                try
+                {
+                    SBL2Partition = new SBL2(FFU.GetPartition("SBL2"));
+                }
+                catch (Exception Ex)
+                {
+                    LogFile.LogException(Ex);
+                    throw new Exception("Error: Parsing SBL2 failed.");
+                }
+
+                if (DumpPartitions)
+                {
+                    try
+                    {
+                        File.WriteAllBytes(DumpFilePrefix + "05.bin", SBL2Partition.Binary); // Original SBL2
+                    }
+                    catch (Exception Ex)
+                    {
+                        LogFile.LogException(Ex);
+                        throw new Exception("Error: Writing binary for logging failed.");
+                    }
+                }
+
+                byte[] SBL2 = SBL2Partition.Binary;
+
+                SBL3 SBL3Partition;
+
+                try
+                {
+                    SBL3Partition = new SBL3(FFU.GetPartition("SBL3"));
+                }
+                catch (Exception Ex)
+                {
+                    LogFile.LogException(Ex);
+                    throw new Exception("Error: Parsing SBL3 from FFU failed.");
+                }
+                
+                if (DumpPartitions)
+                {
+                    try
+                    {
+                        File.WriteAllBytes(DumpFilePrefix + "07.bin", SBL3Partition.Binary); // Original SBL3
+                    }
+                    catch (Exception Ex)
+                    {
+                        LogFile.LogException(Ex);
+                        throw new Exception("Error: Writing binary for logging failed.");
+                    }
+                }
+
+                byte[] SBL3 = SBL2Partition.Binary;
+
+                UEFI UEFIPartition = null;
+                try
+                {
+                    UEFIPartition = new UEFI(FFU.GetPartition("UEFI"));
+                }
+                catch (Exception Ex)
+                {
+                    LogFile.LogException(Ex);
+                    throw new Exception("Error: Parsing UEFI failed.");
+                }
+
+                if (DumpPartitions)
+                {
+                    try
+                    {
+                        File.WriteAllBytes(DumpFilePrefix + "09.bin", UEFIPartition.Binary); // Original UEFI
+                    }
+                    catch (Exception Ex)
+                    {
+                        LogFile.LogException(Ex);
+                        throw new Exception("Error: Writing binary for logging failed.");
+                    }
+                }
+
+                byte[] UEFI = UEFIPartition.Binary;
+
+                List<QualcommPartition> PossibleLoaders = null;
+                if (!IsBootLoaderUnlocked || Notifier.CurrentInterface == PhoneInterfaces.Qualcomm_Download)
+                {
+                    try
+                    {
+                        PossibleLoaders = QualcommLoaders.GetPossibleLoadersForRootKeyHash(LoadersPath, RootKeyHash);
+                        if (PossibleLoaders.Count == 0)
+                        {
+                            throw new Exception("Error: No matching loaders found for RootKeyHash.");
+                        }
+                    }
+                    catch (Exception Ex)
+                    {
+                        LogFile.LogException(Ex);
+                        throw new Exception("Error: Unexpected error during scanning for loaders.");
+                    }
+                }
+
+                if (IsBootLoaderUnlocked)
+                // Flash phone in Flash app
+                {
+                    NokiaFlashModel CurrentModel = (NokiaFlashModel)Notifier.CurrentModel;
+                    LogFile.Log("Start flashing in Custom Flash mode");
+
+                    UInt64 TotalSectorCount = (UInt64)0x21 + 1 +
+                        (UInt64)(SBL2.Length / 0x200) +
+                        (UInt64)(SBL3.Length / 0x200) +
+                        (UInt64)(UEFI.Length / 0x200);
+
+                    SetWorkingStatus("Flashing original bootloader...", MaxProgressValue: 100, Status: WPinternalsStatus.Flashing);
+                    ProgressUpdater Progress = new ProgressUpdater(TotalSectorCount, (int ProgressPercentage, TimeSpan? TimeSpan) => UpdateWorkingStatus("Flashing original bootloader...", CurrentProgressValue: (ulong)ProgressPercentage, Status: WPinternalsStatus.Flashing));
+
+                    LogFile.Log("Flash GPT at 0x" + ((UInt32)0x200).ToString("X8"));
+                    CurrentModel.FlashSectors(1, GPT, 0);
+                    Progress.SetProgress(0x21);
+                    
+                    LogFile.Log("Flash SBL2 at 0x" + ((UInt32)NewGPT.GetPartition("SBL2").FirstSector * 0x200).ToString("X8"));
+                    CurrentModel.FlashRawPartition(SBL2, "SBL2", Progress);
+                    LogFile.Log("Flash SBL3 at 0x" + ((UInt32)NewGPT.GetPartition("SBL3").FirstSector * 0x200).ToString("X8"));
+                    CurrentModel.FlashRawPartition(SBL3, "SBL3", Progress);
+                    LogFile.Log("Flash UEFI at 0x" + ((UInt32)NewGPT.GetPartition("UEFI").FirstSector * 0x200).ToString("X8"));
+                    CurrentModel.FlashRawPartition(UEFI, "UEFI", Progress);
+
+                    // phone is in flash mode, we can exit
+                }
+                else if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Flash || Notifier.CurrentInterface == PhoneInterfaces.Qualcomm_Download || Notifier.CurrentInterface == PhoneInterfaces.Qualcomm_Flash)
+                {
+                    // Switch to DLOAD
+                    if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Flash)
+                    {
+                        SetWorkingStatus("Switching to Emergency Download mode...");
+                        PerformSoftBrick(Notifier, FFU);
+                        if (Notifier.CurrentInterface != PhoneInterfaces.Qualcomm_Download)
+                            await Notifier.WaitForArrival();
+                        if (Notifier.CurrentInterface != PhoneInterfaces.Qualcomm_Download)
+                            throw new WPinternalsException("Phone failed to switch to DLOAD.");
+                    }
+
+                    // Send loader
+                    if (Notifier.CurrentInterface == PhoneInterfaces.Qualcomm_Download)
+                    {
+                        SetWorkingStatus("Sending loader...");
+                        SendLoader(Notifier, PossibleLoaders);
+                        if (Notifier.CurrentInterface != PhoneInterfaces.Qualcomm_Flash)
+                            await Notifier.WaitForArrival();
+                        if (Notifier.CurrentInterface != PhoneInterfaces.Qualcomm_Flash)
+                            throw new WPinternalsException("Phone failed to switch to DLOAD.");
+                    }
+
+                    // Flash bootloader
+                    QualcommSerial Serial = (QualcommSerial)Notifier.CurrentModel;
+                    Serial.EncodeCommands = false;
+
+                    QualcommFlasher Flasher = new QualcommFlasher(Serial);
+
+                    UInt64 TotalSectorCount = (UInt64)1 + 0x21 + 1 +
+                        (UInt64)(SBL2.Length / 0x200) +
+                        (UInt64)(SBL3.Length / 0x200) +
+                        (UInt64)(UEFI.Length / 0x200) +
+                        NewGPT.GetPartition("SBL1").SizeInSectors - 1 +
+                        NewGPT.GetPartition("TZ").SizeInSectors +
+                        NewGPT.GetPartition("RPM").SizeInSectors +
+                        NewGPT.GetPartition("WINSECAPP").SizeInSectors;
+
+                    SetWorkingStatus("Flashing original bootloader...", MaxProgressValue: 100, Status: WPinternalsStatus.Flashing);
+                    ProgressUpdater Progress = new ProgressUpdater(TotalSectorCount, (int ProgressPercentage, TimeSpan? TimeSpan) => UpdateWorkingStatus("Flashing original bootloader...", CurrentProgressValue: (ulong)ProgressPercentage, Status: WPinternalsStatus.Flashing));
+
+                    Flasher.Hello();
+                    Flasher.SetSecurityMode(0);
+                    Flasher.OpenPartition(0x21);
+
+                    LogFile.Log("Partition opened.");
+
+                    byte[] MBR = FFU.GetSectors(0, 1);
+
+                    LogFile.Log("Flash MBR at 0x" + ((UInt32)0).ToString("X8"));
+                    Flasher.Flash(0, MBR, Progress, 0, 0x200);
+
+                    LogFile.Log("Flash GPT at 0x" + ((UInt32)0x200).ToString("X8"));
+                    Flasher.Flash(0x200, GPT, Progress, 0, 0x41FF); // Bad bounds-check in the flash-loader prohibits to write the last byte.
+
+                    LogFile.Log("Flash SBL2 at 0x" + ((UInt32)NewGPT.GetPartition("SBL2").FirstSector * 0x200).ToString("X8"));
+                    Flasher.Flash((uint)NewGPT.GetPartition("SBL2").FirstSector * 0x200, SBL2, Progress);
+                    LogFile.Log("Flash SBL3 at 0x" + ((UInt32)NewGPT.GetPartition("SBL3").FirstSector * 0x200).ToString("X8"));
+                    Flasher.Flash((uint)NewGPT.GetPartition("SBL3").FirstSector * 0x200, SBL3, Progress);
+                    LogFile.Log("Flash UEFI at 0x" + ((UInt32)NewGPT.GetPartition("UEFI").FirstSector * 0x200).ToString("X8"));
+                    Flasher.Flash((uint)NewGPT.GetPartition("UEFI").FirstSector * 0x200, UEFI, Progress);
+
+                    // To minimize risk of brick also flash these partitions:
+                    LogFile.Log("Flash SBL1 at 0x" + ((UInt32)NewGPT.GetPartition("SBL1").FirstSector * 0x200).ToString("X8"));
+                    Flasher.Flash((uint)NewGPT.GetPartition("SBL1").FirstSector * 0x200, FFU.GetPartition("SBL1"), Progress, 0, ((UInt32)NewGPT.GetPartition("SBL1").SizeInSectors - 1) * 0x200);
+                    LogFile.Log("Flash TZ at 0x" + ((UInt32)NewGPT.GetPartition("TZ").FirstSector * 0x200).ToString("X8"));
+                    Flasher.Flash((uint)NewGPT.GetPartition("TZ").FirstSector * 0x200, FFU.GetPartition("TZ"), Progress);
+                    LogFile.Log("Flash RPM at 0x" + ((UInt32)NewGPT.GetPartition("RPM").FirstSector * 0x200).ToString("X8"));
+                    Flasher.Flash((uint)NewGPT.GetPartition("RPM").FirstSector * 0x200, FFU.GetPartition("RPM"), Progress);
+
+                    // Workaround for bad bounds-check in flash-loader
+                    UInt32 Length = (UInt32)FFU.GetPartition("WINSECAPP").Length;
+                    UInt32 Start = (UInt32)NewGPT.GetPartition("WINSECAPP").FirstSector * 0x200;
+                    if ((Start + Length) > 0x1E7FE00)
+                        Length = 0x1E7FE00 - Start;
+                    LogFile.Log("Flash WINSECAPP at 0x" + ((UInt32)NewGPT.GetPartition("WINSECAPP").FirstSector * 0x200).ToString("X8"));
+                    Flasher.Flash(Start, FFU.GetPartition("WINSECAPP"), Progress, 0, Length);
+
+                    Flasher.ClosePartition();
+
+                    LogFile.Log("Partition closed. Flashing ready. Rebooting.");
+
+                    // Reboot phone to Flash app
+                    SetWorkingStatus("Flashing done. Rebooting...");
+                    Flasher.Reboot();
+
+                    Flasher.CloseSerial();
+
+                    if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Bootloader && Notifier.CurrentInterface != PhoneInterfaces.Lumia_Flash)
+                        await Notifier.WaitForArrival();
+
+                    if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Bootloader && Notifier.CurrentInterface != PhoneInterfaces.Lumia_Flash)
+                        throw new WPinternalsException("Phone is in an unexpected mode.");
+
+                    if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Bootloader)
+                    {
+                        await SwitchModeViewModel.SwitchToWithStatus(Notifier, PhoneInterfaces.Lumia_Flash, SetWorkingStatus, UpdateWorkingStatus);
+                    }
+                }
+                else
+                {
+                    throw new WPinternalsException("Phone is in an unexpected mode.");
+                }
+
+                NokiaFlashModel FlashModel = (NokiaFlashModel)Notifier.CurrentModel;
+                if (FlashModel.ReadParam("FS")[3] > 0)
+                    ExitSuccess("The phone is relocked", "NOTE: You need to flash a stock ROM because you recovered a phone from a bootloader unlock failure.");
+                else
+                {
+                    LogFile.Log("Phone is relocked", LogType.FileAndConsole);
+                    ExitSuccess("The phone is relocked", "NOTE: Make sure the phone properly boots and shuts down at least once before you unlock it again");
+                }
+            }
+            catch (Exception Ex)
+            {
+                LogFile.LogException(Ex);
+                ExitFailure("Error: " + Ex.Message, null);
+            }
+            finally
+            {
+                LogFile.EndAction("RelockBootloader");
+            }
+        }
+
+        // Magic!
+        // Platform Secure Boot Hack for Spec A devices
+        //
+        // Assumes phone in Flash mode
+        //               in Qualcomm Dload
+        //               in Qualcomm Flash
+        //
         internal static async Task LumiaV1UnlockFirmware(PhoneNotifierViewModel Notifier, string FFUPath, string LoadersPath, string SBL3Path, string SupportedFFUPath, SetWorkingStatus SetWorkingStatus = null, UpdateWorkingStatus UpdateWorkingStatus = null, ExitSuccess ExitSuccess = null, ExitFailure ExitFailure = null)
         {
             LogFile.BeginAction("UnlockBootloader");
@@ -197,7 +615,7 @@ namespace WPinternals
                 }
                 else
                 {
-
+                    NewGPT = FFU.GPT;
                 }
 
                 // Make sure all partitions are in range of the emergency flasher.
@@ -495,7 +913,7 @@ namespace WPinternals
                 }
 
                 List<QualcommPartition> PossibleLoaders = null;
-                if (!IsBootLoaderUnlocked)
+                if (!IsBootLoaderUnlocked || Notifier.CurrentInterface == PhoneInterfaces.Qualcomm_Download)
                 {
                     try
                     {

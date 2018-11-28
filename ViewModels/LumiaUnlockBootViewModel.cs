@@ -54,15 +54,6 @@ namespace WPinternals
         private string SupportedFFUPath;
         private bool IsBootLoaderUnlocked;
         private byte[] RootKeyHash = null;
-        private List<QualcommPartition> PossibleLoaders;
-        private GPT NewGPT;
-        private byte[] GPT;
-        private byte[] ExtraSector;
-        private byte[] SBL2;
-        private byte[] SBL3;
-        private byte[] UEFI;
-        private FFU FFU;
-        private FFU SupportedFFU;
         private Action SwitchToFlashRom;
         private Action SwitchToUndoRoot;
         private Action SwitchToDownload;
@@ -93,51 +84,6 @@ namespace WPinternals
         ~LumiaUnlockBootViewModel()
         {
             PhoneNotifier.NewDeviceArrived -= NewDeviceArrived;
-        }
-
-        internal void SendLoader()
-        {
-            // Assume 9008 mode
-            if (!((PhoneNotifier.CurrentModel is QualcommSerial) && (PossibleLoaders != null) && (PossibleLoaders.Count > 0)))
-                return;
-
-            ActivateSubContext(new BusyViewModel("Sending loader..."));
-            LogFile.Log("Sending loader");
-
-            QualcommSerial Serial = (QualcommSerial)PhoneNotifier.CurrentModel;
-            QualcommDownload Download = new QualcommDownload(Serial);
-            if (Download.IsAlive())
-            {
-                int Attempt = 1;
-                bool Result = false;
-                foreach (QualcommPartition Loader in PossibleLoaders)
-                {
-                    LogFile.Log("Attempt " + Attempt.ToString());
-
-                    try
-                    {
-                        Download.SendToPhoneMemory(0x2A000000, Loader.Binary);
-                        Download.StartBootloader(0x2A000000);
-                        Result = true;
-                        LogFile.Log("Loader sent successfully");
-                    }
-                    catch { }
-
-                    if (Result)
-                        break;
-
-                    Attempt++;
-                }
-                Serial.Close();
-
-                if (!Result)
-                    LogFile.Log("Loader failed");
-            }
-            else
-            {
-                LogFile.Log("Failed to communicate to Qualcomm Emergency Download mode");
-                throw new BadConnectionException();
-            }
         }
 
         // Potentially blocking UI. Threadsafe.
@@ -195,203 +141,155 @@ namespace WPinternals
                         // So this is not always in a thread from the threadpool.
                         // So we need to avoid UI blocking code here.
 
-                        // Flash Param "FS" is the Flash Status (4 bytes, Big Endian DWORD, values: 0 / 1)
-                        // When flashing is done and phone is still in flash-mode, write raw dummy sector and restart phone
-                        NokiaFlashModel FlashModel = (NokiaFlashModel)PhoneNotifier.CurrentModel;
-                        if (IsFlashingDone && (FlashModel.ReadParam("FS")[3] > 0))
+                        IsSwitchingInterface = false;
+
+                        int TestPos = 0;
+
+                        try // In case phone reboots during the time that status is being read
                         {
-                            if (DoUnlock)
-                            {
-                                IsSwitchingInterface = true;
-                                LogFile.Log("Phone detected in Flash-in-progress-mode. Escaping from Flash-mode.;");
-                                ActivateSubContext(new BusyViewModel("Escaping from Flash mode..."));
+                            // Some phones, like Lumia 928 verizon, do not support the Terminal interface!
+                            // To read the RootKeyHash we use ReadParam("RRKH"), instead of GetTerminalResponse().RootKeyHash.
+                            RootKeyHash = ((NokiaFlashModel)PhoneNotifier.CurrentModel).ReadParam("RRKH");
 
-                                new Thread(() =>
+                            TestPos = 1;
+
+                            UefiSecurityStatusResponse SecurityStatus = ((NokiaFlashModel)PhoneNotifier.CurrentModel).ReadSecurityStatus();
+                            IsBootLoaderUnlocked = (SecurityStatus.AuthenticationStatus || SecurityStatus.RdcStatus || !SecurityStatus.SecureFfuEfuseStatus);
+
+                            TestPos = 2;
+
+                            PhoneInfo Info = ((NokiaFlashModel)PhoneNotifier.CurrentModel).ReadPhoneInfo();
+
+                            TestPos = 3;
+
+                            if (Info.FlashAppProtocolVersionMajor < 2)
+                            {
+                                // This action is executed after the resources are selected by the user.
+                                Action<string, string, string, string, string, string, bool> ReturnFunction = (FFUPath, LoadersPath, SBL3Path, ProfileFFUPath, EDEPath, SupportedFFUPath, DoFixBoot) =>
                                 {
-                                    RecoverFromFlashMode();
-                                }).Start();
-                            }
-                            else
-                            {
-                                IsSwitchingInterface = false;
-                                ActivateSubContext(new MessageViewModel("Bootloader restored. You can now flash a stock ROM.", SwitchToFlashRom));
-                            }
-                        }
-                        else
-                        {
-                            IsSwitchingInterface = false;
-
-                            int TestPos = 0;
-
-                            try // In case phone reboots during the time that status is being read
-                            {
-                                // Some phones, like Lumia 928 verizon, do not support the Terminal interface!
-                                // To read the RootKeyHash we use ReadParam("RRKH"), instead of GetTerminalResponse().RootKeyHash.
-                                RootKeyHash = ((NokiaFlashModel)PhoneNotifier.CurrentModel).ReadParam("RRKH");
-
-                                TestPos = 1;
-
-                                UefiSecurityStatusResponse SecurityStatus = ((NokiaFlashModel)PhoneNotifier.CurrentModel).ReadSecurityStatus();
-                                IsBootLoaderUnlocked = (SecurityStatus.AuthenticationStatus || SecurityStatus.RdcStatus || !SecurityStatus.SecureFfuEfuseStatus);
-
-                                TestPos = 2;
-
-                                PhoneInfo Info = ((NokiaFlashModel)PhoneNotifier.CurrentModel).ReadPhoneInfo();
-
-                                TestPos = 3;
-
-                                if (Info.FlashAppProtocolVersionMajor < 2)
-                                {
-                                    // This action is executed after the resources are selected by the user.
-                                    Action<string, string, string, string, string, string, bool> ReturnFunction = (FFUPath, LoadersPath, SBL3Path, ProfileFFUPath, EDEPath, SupportedFFUPath, DoFixBoot) =>
-                                    {
                                         // This is a callback on the UI thread
                                         // Resources are confirmed by user
                                         this.FFUPath = FFUPath;
-                                        this.LoadersPath = LoadersPath;
-                                        this.SBL3Path = SBL3Path;
-                                        this.SupportedFFUPath = SupportedFFUPath;
-                                        StorePaths();
+                                    this.LoadersPath = LoadersPath;
+                                    this.SBL3Path = SBL3Path;
+                                    this.SupportedFFUPath = SupportedFFUPath;
+                                    StorePaths();
 
-                                        LogFile.Log("Processing resources:");
-                                        LogFile.Log("FFU: " + FFUPath);
-                                        LogFile.Log("Loaders: " + LoadersPath);
-                                        if (SBL3Path == null)
-                                            LogFile.Log("No SBL3 specified");
-                                        else
-                                            LogFile.Log("SBL3: " + SBL3Path);
-
-                                        ActivateSubContext(new BusyViewModel("Processing resources..."));
-
-                                        if (DoUnlock)
-                                        {
-                                            // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
-                                            IsSwitchingInterface = true;
-                                            State = MachineState.LumiaSpecBUnlockBoot;
-
-                                            Task.Run(async () =>
-                                            {
-                                                await LumiaUnlockBootloaderViewModel.LumiaV1UnlockFirmware(PhoneNotifier, FFUPath, LoadersPath, SBL3Path, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
-                                            });
-                                        }
-                                        else
-                                        {
-                                            new Thread(() =>
-                                            {
-                                                bool ResourcesVerified = false;
-                                                try
-                                                {
-                                                    ResourcesVerified = EvaluateResources();
-                                                    if (!ResourcesVerified)
-                                                    {
-                                                        LogFile.Log("Processing resources failed.");
-                                                        ActivateSubContext(new MessageViewModel("Invalid resources.", Abort));
-                                                    }
-                                                }
-                                                catch (Exception Ex)
-                                                {
-                                                    LogFile.LogException(Ex);
-                                                    ActivateSubContext(new MessageViewModel(Ex.Message, Abort));
-                                                }
-
-                                                if (ResourcesVerified)
-                                                {
-                                                    if (IsBootLoaderUnlocked)
-                                                    {
-                                                        CustomFlashBootLoader();
-                                                    }
-                                                    else
-                                                        PerformSoftBrick();
-                                                }
-                                            }).Start();
-                                        }
-                                    };
-
-                                    if (DoUnlock)
-                                        ActivateSubContext(new BootUnlockResourcesViewModel("Lumia Flash mode", RootKeyHash, SwitchToFlashRom, SwitchToUndoRoot, SwitchToDownload, ReturnFunction, Abort, IsBootLoaderUnlocked, false));
+                                    LogFile.Log("Processing resources:");
+                                    LogFile.Log("FFU: " + FFUPath);
+                                    LogFile.Log("Loaders: " + LoadersPath);
+                                    if (SBL3Path == null)
+                                        LogFile.Log("No SBL3 specified");
                                     else
-                                        ActivateSubContext(new BootRestoreResourcesViewModel("Lumia Flash mode", RootKeyHash, SwitchToFlashRom, SwitchToUndoRoot, SwitchToDownload, ReturnFunction, Abort, IsBootLoaderUnlocked, false));
-                                }
-                                else
-                                {
+                                        LogFile.Log("SBL3: " + SBL3Path);
+
+                                    ActivateSubContext(new BusyViewModel("Processing resources..."));
+
+                                        // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
+                                        IsSwitchingInterface = true;
+                                    State = MachineState.LumiaSpecBUnlockBoot;
+
                                     if (DoUnlock)
                                     {
-                                        GPT GPT = FlashModel.ReadGPT();
-                                        if ((GPT.GetPartition("IS_UNLOCKED") != null) || (GPT.GetPartition("BACKUP_EFIESP") != null))
+                                        Task.Run(async () =>
                                         {
-                                            ExitMessage("Phone is already unlocked", null);
-                                            return;
-                                        }
+                                            await LumiaUnlockBootloaderViewModel.LumiaV1UnlockFirmware(PhoneNotifier, FFUPath, LoadersPath, SBL3Path, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
+                                        });
                                     }
-
-                                    TestPos = 4;
-
-                                    // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
-                                    IsSwitchingInterface = true;
-
-                                    // This action is executed after the resources are selected by the user.
-                                    Action<string, string, string, string, string, string, bool> ReturnFunction = (FFUPath, LoadersPath, SBL3Path, ProfileFFUPath, EDEPath, SupportedFFUPath, DoFixBoot) =>
+                                    else
                                     {
-                                        State = MachineState.LumiaSpecBUnlockBoot;
-                                        if (DoUnlock)
+                                        Task.Run(async () =>
                                         {
+                                            await LumiaUnlockBootloaderViewModel.LumiaV1RelockFirmware(PhoneNotifier, FFUPath, LoadersPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
+                                        });
+                                    }
+                                };
+
+                                if (DoUnlock)
+                                    ActivateSubContext(new BootUnlockResourcesViewModel("Lumia Flash mode", RootKeyHash, SwitchToFlashRom, SwitchToUndoRoot, SwitchToDownload, ReturnFunction, Abort, IsBootLoaderUnlocked, false));
+                                else
+                                    ActivateSubContext(new BootRestoreResourcesViewModel("Lumia Flash mode", RootKeyHash, SwitchToFlashRom, SwitchToUndoRoot, SwitchToDownload, ReturnFunction, Abort, IsBootLoaderUnlocked, false));
+                            }
+                            else
+                            {
+                                if (DoUnlock)
+                                {
+                                    NokiaFlashModel FlashModel = (NokiaFlashModel)PhoneNotifier.CurrentModel;
+                                    GPT GPT = FlashModel.ReadGPT();
+                                    if ((GPT.GetPartition("IS_UNLOCKED") != null) || (GPT.GetPartition("BACKUP_EFIESP") != null))
+                                    {
+                                        ExitMessage("Phone is already unlocked", null);
+                                        return;
+                                    }
+                                }
+
+                                TestPos = 4;
+
+                                // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
+                                IsSwitchingInterface = true;
+
+                                // This action is executed after the resources are selected by the user.
+                                Action<string, string, string, string, string, string, bool> ReturnFunction = (FFUPath, LoadersPath, SBL3Path, ProfileFFUPath, EDEPath, SupportedFFUPath, DoFixBoot) =>
+                                {
+                                    State = MachineState.LumiaSpecBUnlockBoot;
+                                    if (DoUnlock)
+                                    {
                                             // This is a callback on the UI thread
                                             // Resources are confirmed by user
                                             this.ProfileFFUPath = ProfileFFUPath;
-                                            this.EDEPath = EDEPath;
-                                            this.SupportedFFUPath = SupportedFFUPath;
-                                            StorePaths();
+                                        this.EDEPath = EDEPath;
+                                        this.SupportedFFUPath = SupportedFFUPath;
+                                        StorePaths();
 
-                                            if (DoFixBoot)
-                                                LogFile.Log("Fix Boot");
-                                            else
-                                                LogFile.Log("Unlock Bootloader");
-
-                                            LogFile.Log("Processing resources:");
-                                            LogFile.Log("Profile FFU: " + ProfileFFUPath);
-                                            LogFile.Log("EDE file: " + EDEPath);
-                                            if (SupportedFFUPath != null)
-                                                LogFile.Log("Donor-FFU with supported OS version: " + SupportedFFUPath);
-
-                                            Task.Run(async () =>
-                                                {
-                                                    if (DoFixBoot)
-                                                        await LumiaV2UnlockBootViewModel.LumiaV2FixBoot(PhoneNotifier, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
-                                                    else
-                                                        await LumiaUnlockBootloaderViewModel.LumiaUnlockUEFI(PhoneNotifier, ProfileFFUPath, EDEPath, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
-                                                });
-                                        }
+                                        if (DoFixBoot)
+                                            LogFile.Log("Fix Boot");
                                         else
-                                        {
-                                            Task.Run(async () =>
+                                            LogFile.Log("Unlock Bootloader");
+
+                                        LogFile.Log("Processing resources:");
+                                        LogFile.Log("Profile FFU: " + ProfileFFUPath);
+                                        LogFile.Log("EDE file: " + EDEPath);
+                                        if (SupportedFFUPath != null)
+                                            LogFile.Log("Donor-FFU with supported OS version: " + SupportedFFUPath);
+
+                                        Task.Run(async () =>
                                             {
-                                                FFU ProfileFFU = null;
-
-                                                List<FFUEntry> FFUs = App.Config.FFURepository.Where(e => (Info.PlatformID.StartsWith(e.PlatformID, StringComparison.OrdinalIgnoreCase) && e.Exists())).ToList();
-                                                if (FFUs.Count() > 0)
-                                                    ProfileFFU = new FFU(FFUs[0].Path);
+                                                if (DoFixBoot)
+                                                    await LumiaV2UnlockBootViewModel.LumiaV2FixBoot(PhoneNotifier, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
                                                 else
-                                                    throw new WPinternalsException("Profile FFU missing");
-
-                                                LogFile.Log("Profile FFU: " + ProfileFFU.Path);
-
-                                                await LumiaUnlockBootloaderViewModel.LumiaRelockUEFI(PhoneNotifier, ProfileFFU.Path, true, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
+                                                    await LumiaUnlockBootloaderViewModel.LumiaUnlockUEFI(PhoneNotifier, ProfileFFUPath, EDEPath, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
                                             });
-                                        }
-                                    };
-
-                                    TestPos = 5;
-
-                                    if (DoUnlock)
-                                        ActivateSubContext(new BootUnlockResourcesViewModel("Lumia Flash mode", RootKeyHash, SwitchToFlashRom, SwitchToUndoRoot, SwitchToDownload, ReturnFunction, Abort, IsBootLoaderUnlocked, true, Info.PlatformID, Info.Type));
+                                    }
                                     else
-                                        ActivateSubContext(new BootRestoreResourcesViewModel("Lumia Flash mode", RootKeyHash, SwitchToFlashRom, SwitchToUndoRoot, SwitchToDownload, ReturnFunction, Abort, IsBootLoaderUnlocked, true, Info.PlatformID, Info.Type));
-                                }
+                                    {
+                                        Task.Run(async () =>
+                                        {
+                                            FFU ProfileFFU = null;
+
+                                            List<FFUEntry> FFUs = App.Config.FFURepository.Where(e => (Info.PlatformID.StartsWith(e.PlatformID, StringComparison.OrdinalIgnoreCase) && e.Exists())).ToList();
+                                            if (FFUs.Count() > 0)
+                                                ProfileFFU = new FFU(FFUs[0].Path);
+                                            else
+                                                throw new WPinternalsException("Profile FFU missing");
+
+                                            LogFile.Log("Profile FFU: " + ProfileFFU.Path);
+
+                                            await LumiaUnlockBootloaderViewModel.LumiaRelockUEFI(PhoneNotifier, ProfileFFU.Path, true, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
+                                        });
+                                    }
+                                };
+
+                                TestPos = 5;
+
+                                if (DoUnlock)
+                                    ActivateSubContext(new BootUnlockResourcesViewModel("Lumia Flash mode", RootKeyHash, SwitchToFlashRom, SwitchToUndoRoot, SwitchToDownload, ReturnFunction, Abort, IsBootLoaderUnlocked, true, Info.PlatformID, Info.Type));
+                                else
+                                    ActivateSubContext(new BootRestoreResourcesViewModel("Lumia Flash mode", RootKeyHash, SwitchToFlashRom, SwitchToUndoRoot, SwitchToDownload, ReturnFunction, Abort, IsBootLoaderUnlocked, true, Info.PlatformID, Info.Type));
                             }
-                            catch (Exception Ex)
-                            {
-                                LogFile.LogException(Ex, LogType.FileAndConsole, TestPos.ToString());
-                            }
+                        }
+                        catch (Exception Ex)
+                        {
+                            LogFile.LogException(Ex, LogType.FileAndConsole, TestPos.ToString());
                         }
                         break;
                     case PhoneInterfaces.Qualcomm_Download:
@@ -409,93 +307,29 @@ namespace WPinternals
                             return;
                         }
 
-                        if ((this.FFUPath == null) || (this.PossibleLoaders == null) || (this.PossibleLoaders.Count == 0))
+                        // This action is executed after the user selected the resources.
+                        Action<string, string, string, string, string, string, bool> ReturnFunctionD = (FFUPath, LoadersPath, SBL3Path, ProfileFFUPath, EDEPath, SupportedFFUPath, DoFixBoot) =>
                         {
-                            // This action is executed after the user selected the resources.
-                            Action<string, string, string, string, string, string, bool> ReturnFunction = (FFUPath, LoadersPath, SBL3Path, ProfileFFUPath, EDEPath, SupportedFFUPath, DoFixBoot) =>
-                            {
-                                // This is a callback on the UI thread
-                                // Resources are confirmed by user
-                                this.FFUPath = FFUPath;
-                                this.LoadersPath = LoadersPath;
-                                this.SBL3Path = SBL3Path;
-                                StorePaths();
+                            State = MachineState.LumiaSpecBUnlockBoot;
+                            // This is a callback on the UI thread
+                            // Resources are confirmed by user
+                            this.FFUPath = FFUPath;
+                            this.LoadersPath = LoadersPath;
+                            this.SBL3Path = SBL3Path;
+                            StorePaths();
 
-                                LogFile.Log("Processing resources:");
-                                LogFile.Log("FFU: " + FFUPath);
-                                LogFile.Log("Loaders: " + LoadersPath);
-                                if (SBL3Path == null)
-                                    LogFile.Log("No SBL3 specified");
-                                else
-                                    LogFile.Log("SBL3: " + SBL3Path);
-
-                                ActivateSubContext(new BusyViewModel("Processing resources..."));
-
-                                if (DoUnlock)
-                                {
-                                    // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
-                                    IsSwitchingInterface = true;
-                                    State = MachineState.LumiaSpecBUnlockBoot;
-
-                                    Task.Run(async () =>
-                                    {
-                                        await LumiaUnlockBootloaderViewModel.LumiaV1UnlockFirmware(PhoneNotifier, FFUPath, LoadersPath, SBL3Path, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
-                                    });
-                                }
-                                else
-                                {
-                                    new Thread(() =>
-                                {
-                                    bool ResourcesVerified = false;
-                                    try
-                                    {
-                                        ResourcesVerified = EvaluateResources();
-                                        if (!ResourcesVerified)
-                                        {
-                                            LogFile.Log("Processing resources failed.");
-                                            ActivateSubContext(new MessageViewModel("Invalid resources.", Abort));
-                                        }
-                                    }
-                                    catch (Exception Ex)
-                                    {
-                                        LogFile.LogException(Ex);
-                                        ActivateSubContext(new MessageViewModel(Ex.Message, Abort));
-                                    }
-
-                                    if (ResourcesVerified)
-                                        SendLoader();
-                                }).Start();
-                                }
-                            };
-
-                            if (DoUnlock)
-                                ActivateSubContext(new BootUnlockResourcesViewModel("Qualcomm Emergency Download mode", RootKeyHash, SwitchToFlashRom, SwitchToUndoRoot, SwitchToDownload, ReturnFunction, Abort, IsBootLoaderUnlocked, false));
+                            LogFile.Log("Processing resources:");
+                            LogFile.Log("FFU: " + FFUPath);
+                            LogFile.Log("Loaders: " + LoadersPath);
+                            if (SBL3Path == null)
+                                LogFile.Log("No SBL3 specified");
                             else
-                                ActivateSubContext(new BootRestoreResourcesViewModel("Qualcomm Emergency Download mode", RootKeyHash, SwitchToFlashRom, SwitchToUndoRoot, SwitchToDownload, ReturnFunction, Abort, IsBootLoaderUnlocked, false));
-                        }
-                        else
-                            new Thread(() =>
-                            {
-                                SendLoader();
-                            }).Start();
-                        break;
-                    case PhoneInterfaces.Qualcomm_Flash:
-                        {
+                                LogFile.Log("SBL3: " + SBL3Path);
+
+                            ActivateSubContext(new BusyViewModel("Processing resources..."));
+
                             if (DoUnlock)
                             {
-                                IsSwitchingInterface = true;
-                                State = MachineState.LumiaSpecBUnlockBoot;
-                                ActivateSubContext(new BusyViewModel("Recovering resources..."));
-
-                                LogFile.Log("Phone was unexpectedly detected in this mode while resources were not loaded yet.");
-                                LogFile.Log("WPInternals tool probably crashed in previous session.");
-                                LogFile.Log("Trying to recover resources from the registry.");
-
-                                FFUPath = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "FFUPath", null);
-                                SupportedFFUPath = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "SupportedFFUPath", null);
-                                LoadersPath = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "LoadersPath", null);
-                                SBL3Path = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "SBL3Path", null);
-
                                 Task.Run(async () =>
                                 {
                                     await LumiaUnlockBootloaderViewModel.LumiaV1UnlockFirmware(PhoneNotifier, FFUPath, LoadersPath, SBL3Path, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
@@ -503,44 +337,53 @@ namespace WPinternals
                             }
                             else
                             {
-                                new Thread(() =>
-                                {
-                                    FlashBootLoader();
-                                }).Start();
-                            }
-                        break;
-                        }
-                    case PhoneInterfaces.Lumia_Bootloader:
-                        IsSwitchingInterface = true;
-                        if (IsFlashingDone)
-                        {
-                            if (DoUnlock)
-                            {
-                                // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
-                                IsSwitchingInterface = true;
-
-                                State = MachineState.LumiaSpecBUnlockBoot;
-                                this.ProfileFFUPath = FFUPath;
-                                StorePaths();
-
-                                LogFile.Log("Unlock Bootloader");
-
-                                LogFile.Log("Processing resources:");
-                                LogFile.Log("Profile FFU: " + ProfileFFUPath);
-                                LogFile.Log("EDE file: " + EDEPath);
-                                if (SupportedFFUPath != null)
-                                    LogFile.Log("Donor-FFU with supported OS version: " + SupportedFFUPath);
-
                                 Task.Run(async () =>
                                 {
-                                    await LumiaUnlockBootloaderViewModel.LumiaUnlockUEFI(PhoneNotifier, ProfileFFUPath, EDEPath, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
+                                    await LumiaUnlockBootloaderViewModel.LumiaV1RelockFirmware(PhoneNotifier, FFUPath, LoadersPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
                                 });
-
                             }
-                            //LogFile.Log("Booting phone");
-                            //ActivateSubContext(new BusyViewModel("Booting phone..."));
-                        }
+                        };
+
+                        if (DoUnlock)
+                            ActivateSubContext(new BootUnlockResourcesViewModel("Qualcomm Emergency Download mode", RootKeyHash, SwitchToFlashRom, SwitchToUndoRoot, SwitchToDownload, ReturnFunctionD, Abort, IsBootLoaderUnlocked, false));
+                        else
+                            ActivateSubContext(new BootRestoreResourcesViewModel("Qualcomm Emergency Download mode", RootKeyHash, SwitchToFlashRom, SwitchToUndoRoot, SwitchToDownload, ReturnFunctionD, Abort, IsBootLoaderUnlocked, false));
+
                         break;
+                    case PhoneInterfaces.Qualcomm_Flash:
+                        {
+                            IsSwitchingInterface = true;
+                            State = MachineState.LumiaSpecBUnlockBoot;
+                            ActivateSubContext(new BusyViewModel("Recovering resources..."));
+
+                            LogFile.Log("Phone was unexpectedly detected in this mode while resources were not loaded yet.");
+                            LogFile.Log("WPInternals tool probably crashed in previous session.");
+                            LogFile.Log("Trying to recover resources from the registry.");
+
+                            FFUPath = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "FFUPath", null);
+                            SupportedFFUPath = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "SupportedFFUPath", null);
+                            LoadersPath = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "LoadersPath", null);
+                            if (DoUnlock)
+                                SBL3Path = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "SBL3Path", null);
+                            else
+                                SBL3Path = null;
+
+                            if (DoUnlock)
+                            {
+                                Task.Run(async () =>
+                                {
+                                    await LumiaUnlockBootloaderViewModel.LumiaV1UnlockFirmware(PhoneNotifier, FFUPath, LoadersPath, SBL3Path, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
+                                });
+                            }
+                            else
+                            {
+                                Task.Run(async () =>
+                                {
+                                    await LumiaUnlockBootloaderViewModel.LumiaV1RelockFirmware(PhoneNotifier, FFUPath, LoadersPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
+                                });
+                            }
+                            break;
+                        }
                     default:
                         // Show View "Waiting for connection"
                         IsSwitchingInterface = false;
@@ -663,7 +506,6 @@ namespace WPinternals
 
             FFUPath = null;
             LoadersPath = null;
-            PossibleLoaders = null;
             SBL3Path = null;
 
             Callback();
@@ -681,707 +523,11 @@ namespace WPinternals
             SuccessMessageViewModel.SubMessage = SubMessage;
             ActivateSubContext(SuccessMessageViewModel);
         }
-
-        // Potentially blocking UI. Threadsafe.
-        private bool EvaluateResources(bool Emergency = false)
-        {
-            bool Result = true;
-
-            bool DumpPartitions = false;
-            string DumpFilePrefix = Environment.ExpandEnvironmentVariables("%ALLUSERSPROFILE%\\WPInternals\\") + DateTime.Now.ToString("yyyy-MM-dd hh.mm.ss") + " - ";
-
-            if ((FFUPath == null) || (FFUPath.Length == 0))
-                throw new Exception("Error: Path for FFU-file is mandatory.");
-
-            if (DoUnlock && ((LoadersPath == null) || (LoadersPath.Length == 0)))
-                throw new Exception("Error: Path for Loaders is mandatory.");
-
-            if (PhoneNotifier.CurrentModel is NokiaFlashModel)
-            {
-                FlashVersion FlashVersion = ((NokiaFlashModel)PhoneNotifier.CurrentModel).GetFlashVersion();
-                if (FlashVersion == null)
-                    throw new Exception("Error: The version of the Flash Application on the phone could not be determined.");
-                if ((FlashVersion.ApplicationMajor < 1) || ((FlashVersion.ApplicationMajor == 1) && (FlashVersion.ApplicationMinor < 28)))
-                    throw new Exception("Error: The version of the Flash Application on the phone is too old. Update your phone using Windows Updates or flash a newer ROM to your phone. Then try again.");
-            }
-
-            try
-            {
-                FFU = new FFU(FFUPath);
-            }
-            catch (Exception Ex)
-            {
-                LogFile.LogException(Ex);
-                throw new Exception("Error: Parsing FFU-file failed.");
-            }
-
-            if (SupportedFFU != null)
-            {
-                try
-                {
-                    SupportedFFU = new FFU(SupportedFFUPath);
-                }
-                catch (Exception Ex)
-                {
-                    LogFile.LogException(Ex);
-                    throw new Exception("Error: Parsing Supported FFU-file failed.");
-                }
-            }
-
-            if (DumpPartitions)
-            {
-                try
-                {
-                    File.WriteAllBytes(DumpFilePrefix + "01.bin", FFU.GetSectors(0, 34)); // Original GPT
-                }
-                catch (Exception Ex)
-                {
-                    LogFile.LogException(Ex);
-                    throw new Exception("Error: Writing binary for logging failed.");
-                }
-            }
-
-            if (PhoneNotifier.CurrentInterface == PhoneInterfaces.Qualcomm_Flash || PhoneNotifier.CurrentInterface == PhoneInterfaces.Qualcomm_Download)
-            {
-                NewGPT = FFU.GPT;
-            }
-            else
-            {
-                State = MachineState.LumiaSpecAGetGPT; // Stop handling arrival notifications in this screen
-                IsSwitchingInterface = true; // Stop handling arrival notifications in MainViewModel
-                SwitchModeViewModel.SwitchTo(PhoneNotifier, PhoneInterfaces.Lumia_Bootloader).Wait();
-                NewGPT = ((NokiaFlashModel)PhoneNotifier.CurrentModel).ReadGPT();
-                SwitchModeViewModel.SwitchTo(PhoneNotifier, PhoneInterfaces.Lumia_Flash).Wait();
-                IsSwitchingInterface = true;
-                State = MachineState.Default;
-            }
-
-            // Make sure all partitions are in range of the emergency flasher.
-            NewGPT.RestoreBackupPartitions();
-
-            // Magic!
-            // SecureBoot hack for Bootloader Spec A
-            if (DoUnlock)
-            {
-                try
-                {
-                    this.GPT = NewGPT.InsertHack();
-                }
-                catch (Exception Ex)
-                {
-                    LogFile.LogException(Ex);
-                    throw new Exception("Error: Parsing partitions failed.");
-                }
-
-                if (SBL3Path != null)
-                {
-                    Partition IsUnlockedFlag = NewGPT.GetPartition("IS_UNLOCKED_SBL3");
-                    if (IsUnlockedFlag == null)
-                    {
-                        IsUnlockedFlag = new Partition();
-                        IsUnlockedFlag.Name = "IS_UNLOCKED_SBL3";
-                        IsUnlockedFlag.Attributes = 0;
-                        IsUnlockedFlag.PartitionGuid = Guid.NewGuid();
-                        IsUnlockedFlag.PartitionTypeGuid = Guid.NewGuid();
-                        IsUnlockedFlag.FirstSector = 0x40;
-                        IsUnlockedFlag.LastSector = 0x40;
-                        NewGPT.Partitions.Add(IsUnlockedFlag);
-                        this.GPT = NewGPT.Rebuild();
-                    }
-                }
-
-                if (DumpPartitions)
-                {
-                    try
-                    {
-                        File.WriteAllBytes(DumpFilePrefix + "02.bin", this.GPT); // Patched GPT
-                    }
-                    catch (Exception Ex)
-                    {
-                        LogFile.LogException(Ex);
-                        throw new Exception("Error: Writing binary for logging failed.");
-                    }
-                }
-            }
-            else
-            {
-                NewGPT.RemoveHack();
-
-                Partition IsUnlockedFlag = NewGPT.GetPartition("IS_UNLOCKED_SBL3");
-                if (IsUnlockedFlag != null)
-                {
-                    NewGPT.Partitions.Remove(IsUnlockedFlag);
-                }
-
-                Partition NvBackupPartition = NewGPT.GetPartition("BACKUP_BS_NV");
-                if (NvBackupPartition != null)
-                {
-                    Partition NvPartition = NewGPT.GetPartition("UEFI_BS_NV");
-                    NvBackupPartition.Name = "UEFI_BS_NV";
-                    NvBackupPartition.PartitionGuid = NvPartition.PartitionGuid;
-                    NvBackupPartition.PartitionTypeGuid = NvPartition.PartitionTypeGuid;
-                    NewGPT.Partitions.Remove(NvPartition);
-                }
-
-                this.GPT = NewGPT.Rebuild();
-            }
-
-            SBL1 SBL1 = null;
-            try
-            {
-                SBL1 = new SBL1(FFU.GetPartition("SBL1"));
-            }
-            catch (Exception Ex)
-            {
-                LogFile.LogException(Ex);
-                throw new Exception("Error: Parsing SBL1 failed.");
-            }
-
-            if (DumpPartitions)
-            {
-                try
-                {
-                    File.WriteAllBytes(DumpFilePrefix + "03.bin", SBL1.Binary); // Original SBL1
-                }
-                catch (Exception Ex)
-                {
-                    LogFile.LogException(Ex);
-                    throw new Exception("Error: Writing binary for logging failed.");
-                }
-            }
-
-            if (!Emergency)
-            {
-                if (RootKeyHash == null)
-                {
-                    Result = false;
-                    throw new Exception("Error: Root Key Hash could not be retrieved from the phone.");
-                }
-                if (SBL1.RootKeyHash == null)
-                {
-                    Result = false;
-                    throw new Exception("Error: Root Key Hash could not be retrieved from FFU file.");
-                }
-                if (!StructuralComparisons.StructuralEqualityComparer.Equals(RootKeyHash, SBL1.RootKeyHash))
-                {
-                    LogFile.Log("Phone: " + Converter.ConvertHexToString(RootKeyHash, ""));
-                    LogFile.Log("SBL1: " + Converter.ConvertHexToString(SBL1.RootKeyHash, ""));
-                    Result = false;
-                    throw new Exception("Error: Root Key Hash from phone and from FFU file do not match!");
-                }
-            }
-
-            SBL2 SBL2 = null;
-            try
-            {
-                SBL2 = new SBL2(FFU.GetPartition("SBL2"));
-            }
-            catch (Exception Ex)
-            {
-                LogFile.LogException(Ex);
-                throw new Exception("Error: Parsing SBL2 failed.");
-            }
-
-            if (DumpPartitions)
-            {
-                try
-                {
-                    File.WriteAllBytes(DumpFilePrefix + "05.bin", SBL2.Binary); // Original SBL2
-                }
-                catch (Exception Ex)
-                {
-                    LogFile.LogException(Ex);
-                    throw new Exception("Error: Writing binary for logging failed.");
-                }
-            }
-
-            if (DoUnlock)
-            {
-                try
-                {
-                    this.SBL2 = SBL2.Patch();
-                }
-                catch (Exception Ex)
-                {
-                    LogFile.LogException(Ex);
-                    throw new Exception("Error: Patching SBL2 failed.");
-                }
-
-                if (DumpPartitions)
-                {
-                    try
-                    {
-                        File.WriteAllBytes(DumpFilePrefix + "06.bin", SBL2.Binary); // Patched SBL2
-                    }
-                    catch (Exception Ex)
-                    {
-                        LogFile.LogException(Ex);
-                        throw new Exception("Error: Writing binary for logging failed.");
-                    }
-                }
-            }
-            else
-            {
-                this.SBL2 = SBL2.Binary;
-            }
-
-            this.ExtraSector = null;
-            if (DoUnlock)
-            {
-                try
-                {
-                    byte[] PartitionHeader = new byte[0x0C];
-                    Buffer.BlockCopy(SBL2.Binary, 0, PartitionHeader, 0, 0x0C);
-                    this.ExtraSector = SBL1.GenerateExtraSector(PartitionHeader);
-                }
-                catch (Exception Ex)
-                {
-                    LogFile.LogException(Ex);
-                    throw new Exception("Error: Code generation failed.");
-                }
-
-                if (DumpPartitions)
-                {
-                    try
-                    {
-                        File.WriteAllBytes(DumpFilePrefix + "04.bin", this.ExtraSector); // Extra sector
-                    }
-                    catch (Exception Ex)
-                    {
-                        LogFile.LogException(Ex);
-                        throw new Exception("Error: Writing binary for logging failed.");
-                    }
-                }
-            }
-
-            SBL3 SBL3;
-            SBL3 OriginalSBL3;
-
-            try
-            {
-                OriginalSBL3 = new SBL3(FFU.GetPartition("SBL3"));
-            }
-            catch (Exception Ex)
-            {
-                LogFile.LogException(Ex);
-                throw new Exception("Error: Parsing SBL3 from FFU failed.");
-            }
-
-            if (SBL3Path == null)
-            {
-                SBL3 = OriginalSBL3;
-                LogFile.Log("Taking SBL3 from FFU");
-            }
-            else
-            {
-                SBL3 = null;
-                try
-                {
-                    SBL3 = new SBL3(SBL3Path);
-                }
-                catch (Exception Ex)
-                {
-                    LogFile.LogException(Ex);
-                    throw new Exception("Error: Parsing external SBL3 failed.");
-                }
-
-                if (SBL3.Binary.Length > OriginalSBL3.Binary.Length)
-                {
-                    throw new Exception("Error: Selected SBL3 is too large.");
-                }
-                LogFile.Log("Taking selected SBL3");
-            }
-
-            if (DumpPartitions)
-            {
-                try
-                {
-                    File.WriteAllBytes(DumpFilePrefix + "07.bin", SBL3.Binary); // Original SBL3
-                }
-                catch (Exception Ex)
-                {
-                    LogFile.LogException(Ex);
-                    throw new Exception("Error: Writing binary for logging failed.");
-                }
-            }
-
-            if (DoUnlock)
-            {
-                try
-                {
-                    this.SBL3 = SBL3.Patch();
-                }
-                catch (Exception Ex)
-                {
-                    LogFile.LogException(Ex);
-                    throw new Exception("Error: Patching SBL3 failed.");
-                }
-
-                if (DumpPartitions)
-                {
-                    try
-                    {
-                        File.WriteAllBytes(DumpFilePrefix + "08.bin", SBL3.Binary); // Patched SBL3
-                    }
-                    catch (Exception Ex)
-                    {
-                        LogFile.LogException(Ex);
-                        throw new Exception("Error: Writing binary for logging failed.");
-                    }
-                }
-            }
-            else
-            {
-                this.SBL3 = SBL3.Binary;
-            }
-
-            UEFI UEFI = null;
-            try
-            {
-                UEFI = new UEFI(FFU.GetPartition("UEFI"));
-            }
-            catch (Exception Ex)
-            {
-                LogFile.LogException(Ex);
-                throw new Exception("Error: Parsing UEFI failed.");
-            }
-
-            if (DumpPartitions)
-            {
-                try
-                {
-                    File.WriteAllBytes(DumpFilePrefix + "09.bin", UEFI.Binary); // Original UEFI
-                }
-                catch (Exception Ex)
-                {
-                    LogFile.LogException(Ex);
-                    throw new Exception("Error: Writing binary for logging failed.");
-                }
-            }
-
-            if (DoUnlock)
-            {
-                try
-                {
-                    this.UEFI = UEFI.Patch();
-                }
-                catch (Exception Ex)
-                {
-                    LogFile.LogException(Ex);
-                    throw new Exception("Error: Patching UEFI failed.");
-                }
-
-                if (DumpPartitions)
-                {
-                    try
-                    {
-                        File.WriteAllBytes(DumpFilePrefix + "0A.bin", UEFI.Binary); // Patched UEFI
-                    }
-                    catch (Exception Ex)
-                    {
-                        LogFile.LogException(Ex);
-                        throw new Exception("Error: Writing binary for logging failed.");
-                    }
-                }
-            }
-            else
-            {
-                this.UEFI = UEFI.Binary;
-            }
-
-            if (!IsBootLoaderUnlocked)
-            {
-                try
-                {
-                    PossibleLoaders = QualcommLoaders.GetPossibleLoadersForRootKeyHash(LoadersPath, this.RootKeyHash);
-                    if (PossibleLoaders.Count == 0)
-                    {
-                        Result = false;
-                        throw new Exception("Error: No matching loaders found for RootKeyHash.");
-                    }
-                }
-                catch (Exception Ex)
-                {
-                    LogFile.LogException(Ex);
-                    Result = false;
-                    throw new Exception("Error: Unexpected error during scanning for loaders.");
-                }
-            }
-
-            return Result;
-        }
-
-        // TODO: Add logging
-        private void PerformSoftBrick()
-        {
-            IsSwitchingInterface = true;
-            ActivateSubContext(new BusyViewModel("Switching to Emergency Download mode..."));
-
-            // Send FFU headers
-            UInt64 CombinedFFUHeaderSize = this.FFU.HeaderSize;
-            byte[] FfuHeader = new byte[CombinedFFUHeaderSize];
-            System.IO.FileStream FfuFile = new System.IO.FileStream(FFUPath, System.IO.FileMode.Open, System.IO.FileAccess.Read);
-            FfuFile.Read(FfuHeader, 0, (int)CombinedFFUHeaderSize);
-            FfuFile.Close();
-            try
-            {
-                ((NokiaFlashModel)PhoneNotifier.CurrentModel).SendFfuHeaderV1(FfuHeader);
-            }
-            catch (Exception Ex)
-            {
-                IsSwitchingInterface = false;
-                LogFile.LogException(Ex);
-                ActivateSubContext(new MessageViewModel("Error using FFU. Try an FFU image which matches the phone.", Abort));
-                return;
-            }
-
-            // Send 1 empty chunk (according to layout in FFU headers, it will be written to first and last chunk)
-            byte[] EmptyChunk = new byte[0x20000];
-            Array.Clear(EmptyChunk, 0, 0x20000);
-            ((NokiaFlashModel)PhoneNotifier.CurrentModel).SendFfuPayloadV1(EmptyChunk);
-
-            // Reboot to Qualcomm Emergency mode
-            byte[] RebootCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x52 }; // NOKR
-            ((NokiaFlashModel)PhoneNotifier.CurrentModel).ExecuteRawVoidMethod(RebootCommand);
-        }
-
+        
         void NewDeviceArrived(ArrivalEventArgs Args)
         {
             // Do not start on a new thread, because EvaluateViewState will also create new ViewModels and those should be created on the UI thread.
             EvaluateViewState();
-        }
-
-        private async void RecoverFromFlashMode()
-        {
-            IsSwitchingInterface = true;
-            LogFile.Log("Recover from Flash-mode");
-
-            // Flash dummy sector (only allowed when phone is authenticated)
-            byte[] EmptySector = new byte[0x200];
-            Array.Clear(EmptySector, 0, 0x200);
-            ((NokiaFlashModel)PhoneNotifier.CurrentModel).FlashSectors(0x22, EmptySector);
-
-            // Reboot to Qualcomm Emergency mode
-            byte[] RebootCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x52 }; // NOKR
-            ((NokiaFlashModel)PhoneNotifier.CurrentModel).ExecuteRawVoidMethod(RebootCommand);
-
-            await PhoneNotifier.WaitForArrival();
-
-            // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
-            IsSwitchingInterface = true;
-
-            State = MachineState.LumiaSpecBUnlockBoot;
-            this.ProfileFFUPath = FFUPath;
-            StorePaths();
-
-            LogFile.Log("Unlock Bootloader");
-
-            LogFile.Log("Processing resources:");
-            LogFile.Log("Profile FFU: " + ProfileFFUPath);
-            LogFile.Log("EDE file: " + EDEPath);
-            if (SupportedFFUPath != null)
-                LogFile.Log("Donor-FFU with supported OS version: " + SupportedFFUPath);
-
-            await Task.Run(async () =>
-            {
-                await LumiaUnlockBootloaderViewModel.LumiaUnlockUEFI(PhoneNotifier, ProfileFFUPath, EDEPath, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
-            });
-        }
-
-        // Expected to be launched on worker-thread.
-        internal void FlashBootLoader()
-        {
-            IsSwitchingInterface = true;
-            LogFile.Log("Start flashing in Qualcomm Emergency Flash mode");
-
-            if (this.FFU == null)
-            {
-                ActivateSubContext(new BusyViewModel("Recovering resources..."));
-
-                LogFile.Log("Phone was unexpectedly detected in this mode while resources were not loaded yet.");
-                LogFile.Log("WPInternals tool probably crashed in previous session.");
-                LogFile.Log("Trying to recover resources from the registry.");
-
-                // In case tool was terminated
-                FFUPath = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "FFUPath", null);
-                SupportedFFUPath = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "SupportedFFUPath", null);
-                LoadersPath = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "LoadersPath", null);
-                if (DoUnlock)
-                    SBL3Path = (string)Registry.GetValue(@"HKEY_CURRENT_USER\Software\WPInternals", "SBL3Path", null);
-                else
-                    SBL3Path = null;
-
-                try
-                {
-                    EvaluateResources(Emergency: true);
-                }
-                catch (Exception Ex)
-                {
-                    LogFile.LogException(Ex);
-                    ActivateSubContext(new MessageViewModel(Ex.Message, Abort));
-                }
-            }
-
-            QualcommSerial Serial = (QualcommSerial)PhoneNotifier.CurrentModel;
-            Serial.EncodeCommands = false;
-
-            QualcommFlasher Flasher = new QualcommFlasher(Serial);
-
-            UInt64 TotalSectorCount = (UInt64)1 + 0x21 + 1 +
-                (UInt64)(SBL2.Length / 0x200) +
-                (UInt64)(SBL3.Length / 0x200) +
-                (UInt64)(UEFI.Length / 0x200) +
-                NewGPT.GetPartition("SBL1").SizeInSectors - 1 +
-                NewGPT.GetPartition("TZ").SizeInSectors +
-                NewGPT.GetPartition("RPM").SizeInSectors +
-                NewGPT.GetPartition("WINSECAPP").SizeInSectors;
-
-            if (DoUnlock)
-                ActivateSubContext(new BusyViewModel("Flashing unlocked bootloader (part 1)...", MaxProgressValue: TotalSectorCount, UIContext: UIContext));
-            else
-                ActivateSubContext(new BusyViewModel("Flashing original bootloader...", MaxProgressValue: TotalSectorCount, UIContext: UIContext));
-
-            ProgressUpdater Progress = ((BusyViewModel)SubContextViewModel).ProgressUpdater;
-
-            Flasher.Hello();
-            Flasher.SetSecurityMode(0);
-            Flasher.OpenPartition(0x21);
-
-            LogFile.Log("Partition opened.");
-
-            byte[] MBR = FFU.GetSectors(0, 1);
-
-            if (ExtraSector != null)
-            {
-                LogFile.Log("Flash EXT at 0x" + ((UInt32)NewGPT.GetPartition("HACK").FirstSector * 0x200).ToString("X8"));
-                Flasher.Flash((uint)NewGPT.GetPartition("HACK").FirstSector * 0x200, ExtraSector, Progress);
-            }
-
-            LogFile.Log("Flash MBR at 0x" + ((UInt32)0).ToString("X8"));
-            Flasher.Flash(0, MBR, Progress, 0, 0x200);
-
-            LogFile.Log("Flash GPT at 0x" + ((UInt32)0x200).ToString("X8"));
-            Flasher.Flash(0x200, GPT, Progress, 0, 0x41FF); // Bad bounds-check in the flash-loader prohibits to write the last byte.
-
-            LogFile.Log("Flash SBL2 at 0x" + ((UInt32)NewGPT.GetPartition("SBL2").FirstSector * 0x200).ToString("X8"));
-            Flasher.Flash((uint)NewGPT.GetPartition("SBL2").FirstSector * 0x200, SBL2, Progress);
-            LogFile.Log("Flash SBL3 at 0x" + ((UInt32)NewGPT.GetPartition("SBL3").FirstSector * 0x200).ToString("X8"));
-            Flasher.Flash((uint)NewGPT.GetPartition("SBL3").FirstSector * 0x200, SBL3, Progress);
-            LogFile.Log("Flash UEFI at 0x" + ((UInt32)NewGPT.GetPartition("UEFI").FirstSector * 0x200).ToString("X8"));
-            Flasher.Flash((uint)NewGPT.GetPartition("UEFI").FirstSector * 0x200, UEFI, Progress);
-
-            // To minimize risk of brick also flash these partitions:
-            LogFile.Log("Flash SBL1 at 0x" + ((UInt32)NewGPT.GetPartition("SBL1").FirstSector * 0x200).ToString("X8"));
-            Flasher.Flash((uint)NewGPT.GetPartition("SBL1").FirstSector * 0x200, FFU.GetPartition("SBL1"), Progress, 0, ((UInt32)NewGPT.GetPartition("SBL1").SizeInSectors - 1) * 0x200);
-            LogFile.Log("Flash TZ at 0x" + ((UInt32)NewGPT.GetPartition("TZ").FirstSector * 0x200).ToString("X8"));
-            Flasher.Flash((uint)NewGPT.GetPartition("TZ").FirstSector * 0x200, FFU.GetPartition("TZ"), Progress);
-            LogFile.Log("Flash RPM at 0x" + ((UInt32)NewGPT.GetPartition("RPM").FirstSector * 0x200).ToString("X8"));
-            Flasher.Flash((uint)NewGPT.GetPartition("RPM").FirstSector * 0x200, FFU.GetPartition("RPM"), Progress);
-
-            // Workaround for bad bounds-check in flash-loader
-            UInt32 Length = (UInt32)FFU.GetPartition("WINSECAPP").Length;
-            UInt32 Start = (UInt32)NewGPT.GetPartition("WINSECAPP").FirstSector * 0x200;
-            if ((Start + Length) > 0x1E7FE00)
-                Length = 0x1E7FE00 - Start;
-            LogFile.Log("Flash WINSECAPP at 0x" + ((UInt32)NewGPT.GetPartition("WINSECAPP").FirstSector * 0x200).ToString("X8"));
-            Flasher.Flash(Start, FFU.GetPartition("WINSECAPP"), Progress, 0, Length);
-
-            Flasher.ClosePartition();
-
-            IsFlashingDone = true;
-            LogFile.Log("Partition closed. Flashing ready. Rebooting.");
-
-            ActivateSubContext(new BusyViewModel("Flashing done. Rebooting..."));
-            Flasher.Reboot();
-
-            Flasher.CloseSerial();
-        }
-
-        // Expected to be launched on worker-thread.
-        internal async void CustomFlashBootLoader()
-        {
-            IsSwitchingInterface = true;
-
-            NokiaFlashModel CurrentModel = (NokiaFlashModel)PhoneNotifier.CurrentModel;
-
-            if (!DoUnlock && !((NokiaFlashModel)PhoneNotifier.CurrentModel).ReadSecurityStatus().UefiSecureBootStatus)
-            {
-                PhoneInfo Info = CurrentModel.ReadPhoneInfo();
-                FFU ProfileFFU = null;
-
-                List<FFUEntry> FFUs = App.Config.FFURepository.Where(e => (Info.PlatformID.StartsWith(e.PlatformID, StringComparison.OrdinalIgnoreCase) && e.Exists())).ToList();
-                if (FFUs.Count() > 0)
-                    ProfileFFU = new FFU(FFUs[0].Path);
-                else
-                    throw new WPinternalsException("Profile FFU missing");
-
-                LogFile.Log("Profile FFU: " + ProfileFFU.Path);
-
-                await LumiaUnlockBootloaderViewModel.LumiaRelockUEFI(PhoneNotifier, ProfileFFU.Path, true, SetWorkingStatus, UpdateWorkingStatus, null, null);
-            }
-
-            LogFile.Log("Start flashing in Custom Flash mode");
-
-            CurrentModel = (NokiaFlashModel)PhoneNotifier.CurrentModel;
-
-            UInt64 TotalSectorCount = (UInt64)0x21 + 1 +
-                (UInt64)(SBL2.Length / 0x200) +
-                (UInt64)(SBL3.Length / 0x200) +
-                (UInt64)(UEFI.Length / 0x200);
-
-            if (DoUnlock)
-                ActivateSubContext(new BusyViewModel("Flashing unlocked bootloader (part 1)...", MaxProgressValue: TotalSectorCount, UIContext: UIContext));
-            else
-                ActivateSubContext(new BusyViewModel("Flashing original bootloader...", MaxProgressValue: TotalSectorCount, UIContext: UIContext));
-
-            ProgressUpdater Progress = ((BusyViewModel)SubContextViewModel).ProgressUpdater;
-
-            LogFile.Log("Flash GPT at 0x" + ((UInt32)0x200).ToString("X8"));
-            CurrentModel.FlashSectors(1, GPT, 0);
-            Progress.SetProgress(0x21);
-
-            if (ExtraSector != null)
-            {
-                LogFile.Log("Flash EXT at 0x" + ((UInt32)NewGPT.GetPartition("HACK").FirstSector * 0x200).ToString("X8"));
-                CurrentModel.FlashRawPartition(ExtraSector, "HACK", Progress);
-            }
-
-            LogFile.Log("Flash SBL2 at 0x" + ((UInt32)NewGPT.GetPartition("SBL2").FirstSector * 0x200).ToString("X8"));
-            CurrentModel.FlashRawPartition(SBL2, "SBL2", Progress);
-            LogFile.Log("Flash SBL3 at 0x" + ((UInt32)NewGPT.GetPartition("SBL3").FirstSector * 0x200).ToString("X8"));
-            CurrentModel.FlashRawPartition(SBL3, "SBL3", Progress);
-            LogFile.Log("Flash UEFI at 0x" + ((UInt32)NewGPT.GetPartition("UEFI").FirstSector * 0x200).ToString("X8"));
-            CurrentModel.FlashRawPartition(UEFI, "UEFI", Progress);
-
-            IsFlashingDone = true;
-
-            if (DoUnlock && SBL3Path != null)
-            {
-                // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
-                IsSwitchingInterface = true;
-
-                State = MachineState.LumiaSpecBUnlockBoot;
-                // This is a callback on the UI thread
-                // Resources are confirmed by user
-                this.ProfileFFUPath = FFUPath;
-                StorePaths();
-
-                LogFile.Log("Unlock Bootloader");
-
-                LogFile.Log("Processing resources:");
-                LogFile.Log("Profile FFU: " + ProfileFFUPath);
-                LogFile.Log("EDE file: " + EDEPath);
-                if (SupportedFFUPath != null)
-                    LogFile.Log("Donor-FFU with supported OS version: " + SupportedFFUPath);
-
-                await LumiaUnlockBootloaderViewModel.LumiaUnlockUEFI(PhoneNotifier, ProfileFFUPath, EDEPath, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
-            }
-            else
-            {
-                ActivateSubContext(new BusyViewModel("Flashing done. Rebooting..."));
-                byte[] RebootCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x52 }; // NOKR
-                CurrentModel.ExecuteRawVoidMethod(RebootCommand);
-            }
         }
     }
 
