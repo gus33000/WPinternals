@@ -22,9 +22,7 @@ using Microsoft.Win32;
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 
 namespace WPinternals
@@ -37,8 +35,7 @@ namespace WPinternals
     internal enum MachineState
     {
         Default,
-        LumiaSpecAGetGPT,
-        LumiaSpecBUnlockBoot
+        LumiaUnlockBoot
     };
 
     internal class LumiaUnlockBootViewModel : ContextViewModel
@@ -92,7 +89,7 @@ namespace WPinternals
             if (!IsActive)
                 return;
 
-            if ((State == MachineState.LumiaSpecAGetGPT) || (State == MachineState.LumiaSpecBUnlockBoot))
+            if (State == MachineState.LumiaUnlockBoot)
                 return;
 
             lock (EvaluateViewStateLockObject)
@@ -169,7 +166,7 @@ namespace WPinternals
                                 {
                                     // Stop responding to device arrival here, because all connections are handled by subfunctions, not here.
                                     IsSwitchingInterface = true;
-                                    State = MachineState.LumiaSpecBUnlockBoot;
+                                    State = MachineState.LumiaUnlockBoot;
 
                                     // This is a callback on the UI thread
                                     // Resources are confirmed by user
@@ -232,7 +229,7 @@ namespace WPinternals
                                 Action<string, string, string, string, string, string, bool> ReturnFunction = (FFUPath, LoadersPath, SBL3Path, ProfileFFUPath, EDEPath, SupportedFFUPath, DoFixBoot) =>
                                 {
                                     IsSwitchingInterface = true;
-                                    State = MachineState.LumiaSpecBUnlockBoot;
+                                    State = MachineState.LumiaUnlockBoot;
                                     if (DoUnlock)
                                     {
                                             // This is a callback on the UI thread
@@ -312,7 +309,7 @@ namespace WPinternals
                         Action<string, string, string, string, string, string, bool> ReturnFunctionD = (FFUPath, LoadersPath, SBL3Path, ProfileFFUPath, EDEPath, SupportedFFUPath, DoFixBoot) =>
                         {
                             IsSwitchingInterface = true;
-                            State = MachineState.LumiaSpecBUnlockBoot;
+                            State = MachineState.LumiaUnlockBoot;
                             // This is a callback on the UI thread
                             // Resources are confirmed by user
                             this.FFUPath = FFUPath;
@@ -355,7 +352,7 @@ namespace WPinternals
                     case PhoneInterfaces.Qualcomm_Flash:
                         {
                             IsSwitchingInterface = true;
-                            State = MachineState.LumiaSpecBUnlockBoot;
+                            State = MachineState.LumiaUnlockBoot;
                             ActivateSubContext(new BusyViewModel("Recovering resources..."));
 
                             LogFile.Log("Phone was unexpectedly detected in this mode while resources were not loaded yet.");

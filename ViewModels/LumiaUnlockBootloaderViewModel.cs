@@ -53,7 +53,7 @@ namespace WPinternals
             FlashModel.ExecuteRawVoidMethod(RebootCommand);
         }
         
-        internal static void SendLoader(PhoneNotifierViewModel PhoneNotifier, List<QualcommPartition> PossibleLoaders)
+        private static void SendLoader(PhoneNotifierViewModel PhoneNotifier, List<QualcommPartition> PossibleLoaders)
         {
             // Assume 9008 mode
             if (!((PhoneNotifier.CurrentModel is QualcommSerial) && (PossibleLoaders != null) && (PossibleLoaders.Count > 0)))
@@ -520,7 +520,7 @@ namespace WPinternals
                 }
 
                 SetWorkingStatus("Rebooting phone...");
-                await SwitchModeViewModel.SwitchTo(Notifier, PhoneInterfaces.Lumia_Normal);
+                await SwitchModeViewModel.SwitchTo(Notifier, PhoneInterfaces.Lumia_Bootloader);
 
                 if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Bootloader && Notifier.CurrentInterface != PhoneInterfaces.Lumia_Flash)
                     await Notifier.WaitForArrival();
@@ -1211,6 +1211,11 @@ namespace WPinternals
             return GPTChunk;
         }
 
+        // Magic!
+        // UEFI Secure Boot Hack for Spec A and Spec B devices
+        //
+        // Assumes phone in Flash mode
+        //
         internal static async Task LumiaRelockUEFI(PhoneNotifierViewModel Notifier, string FFUPath = null, bool DoResetFirst = true, SetWorkingStatus SetWorkingStatus = null, UpdateWorkingStatus UpdateWorkingStatus = null, ExitSuccess ExitSuccess = null, ExitFailure ExitFailure = null)
         {
             if (SetWorkingStatus == null) SetWorkingStatus = (m, s, v, a, st) => { };
@@ -1503,6 +1508,11 @@ namespace WPinternals
             }
         }
 
+        // Magic!
+        // UEFI Secure Boot Hack for Spec A and Spec B devices
+        //
+        // Assumes phone in Flash mode
+        //
         internal static async Task LumiaUnlockUEFI(PhoneNotifierViewModel Notifier, string ProfileFFUPath, string EDEPath, string SupportedFFUPath, SetWorkingStatus SetWorkingStatus = null, UpdateWorkingStatus UpdateWorkingStatus = null, ExitSuccess ExitSuccess = null, ExitFailure ExitFailure = null, bool ExperimentalSpecBEFIESPUnlock = false)
         {
             LogFile.BeginAction("UnlockBootloader");
@@ -1918,7 +1928,7 @@ namespace WPinternals
         // Sector alignment and data length are ensured for the Custom flash exploit
         // This hack doesn't require us to modify the GPT of the device at all, the new EFIESP is written around the middle of the old one,
         // while keeping the first half of the partition intact, except the very first chunk
-        internal static List<FlashPart> LumiaGenerateEFIESPFlashPayload(byte[] NewEFIESP, GPT DeviceGPT, FFU DeviceFFU, bool IsSpecB)
+        private static List<FlashPart> LumiaGenerateEFIESPFlashPayload(byte[] NewEFIESP, GPT DeviceGPT, FFU DeviceFFU, bool IsSpecB)
         {
             uint SectorSize = 512;
 
@@ -1972,7 +1982,7 @@ namespace WPinternals
 
         // Magic!
         // This function generates a flashing payload which allows us to get back the original device EFIESP without ever going to mass storage mode.
-        internal static List<FlashPart> LumiaGenerateUndoEFIESPFlashPayload(GPT DeviceGPT, FFU DeviceFFU, bool IsSpecB)
+        private static List<FlashPart> LumiaGenerateUndoEFIESPFlashPayload(GPT DeviceGPT, FFU DeviceFFU, bool IsSpecB)
         {
             uint SectorSize = 512;
 
@@ -2028,7 +2038,7 @@ namespace WPinternals
 
         // Magic!
         // This function gets the first sector of the new EFIESP location without ever going to mass storage mode.
-        internal static UInt64 LumiaGetSecondEFIESPSectorLocation(GPT DeviceGPT, FFU DeviceFFU, bool IsSpecB)
+        private static UInt64 LumiaGetSecondEFIESPSectorLocation(GPT DeviceGPT, FFU DeviceFFU, bool IsSpecB)
         {
             uint SectorSize = 512;
             Partition EFIESP = DeviceGPT.GetPartition("EFIESP");
@@ -2057,7 +2067,7 @@ namespace WPinternals
 
         // Magic!
         // This function gets the padding new EFIESP location without ever going to mass storage mode.
-        internal static UInt64 LumiaGetEFIESPadding(GPT DeviceGPT, FFU DeviceFFU, bool IsSpecB)
+        private static UInt64 LumiaGetEFIESPadding(GPT DeviceGPT, FFU DeviceFFU, bool IsSpecB)
         {
             uint SectorSize = 512;
             Partition EFIESP = DeviceGPT.GetPartition("EFIESP");
@@ -2084,7 +2094,7 @@ namespace WPinternals
             return ReservedSectors;
         }
         
-        internal static async Task LumiaFlashParts(PhoneNotifierViewModel Notifier, string FFUPath, bool PerformFullFlashFirst, bool SkipWrite, List<FlashPart> Parts, bool DoResetFirst = true, bool ClearFlashingStatusAtEnd = true, bool CheckSectorAlignment = true, bool ShowProgress = true, bool Experimental = false, SetWorkingStatus SetWorkingStatus = null, UpdateWorkingStatus UpdateWorkingStatus = null, ExitSuccess ExitSuccess = null, ExitFailure ExitFailure = null, string EDEPath = null)
+        private static async Task LumiaFlashParts(PhoneNotifierViewModel Notifier, string FFUPath, bool PerformFullFlashFirst, bool SkipWrite, List<FlashPart> Parts, bool DoResetFirst = true, bool ClearFlashingStatusAtEnd = true, bool CheckSectorAlignment = true, bool ShowProgress = true, bool Experimental = false, SetWorkingStatus SetWorkingStatus = null, UpdateWorkingStatus UpdateWorkingStatus = null, ExitSuccess ExitSuccess = null, ExitFailure ExitFailure = null, string EDEPath = null)
         {
             PhoneInfo Info = ((NokiaFlashModel)Notifier.CurrentModel).ReadPhoneInfo();
             bool IsSpecA = Info.FlashAppProtocolVersionMajor < 2;
@@ -2152,7 +2162,7 @@ namespace WPinternals
             UpdateWorkingStatus(null, null, 100, WPinternalsStatus.Flashing);
         }
 
-        internal static void LumiaPatchEFIESP(FFU SupportedFFU, byte[] EFIESPPartition, bool SpecB)
+        private static void LumiaPatchEFIESP(FFU SupportedFFU, byte[] EFIESPPartition, bool SpecB)
         {
             using (DiscUtils.Fat.FatFileSystem EFIESPFileSystem = new DiscUtils.Fat.FatFileSystem(new MemoryStream(EFIESPPartition)))
             {
