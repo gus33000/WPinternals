@@ -112,9 +112,12 @@ namespace WPinternals
             if (UpdateWorkingStatus == null) UpdateWorkingStatus = (m, s, v, st) => { };
             if (ExitSuccess == null) ExitSuccess = (m, s) => { };
             if (ExitFailure == null) ExitFailure = (m, s) => { };
-
+            
             try
             {
+                if (Notifier.CurrentModel is NokiaFlashModel)
+                    await LumiaUnlockBootloaderViewModel.LumiaRelockUEFI(Notifier, FFUPath, true, SetWorkingStatus, UpdateWorkingStatus, ExitSuccess, ExitFailure);
+
                 LogFile.Log("Assembling data for relock", LogType.FileAndConsole);
                 SetWorkingStatus("Assembling data for relock", null, null);
 
@@ -330,7 +333,7 @@ namespace WPinternals
                     }
                 }
 
-                byte[] SBL3 = SBL2Partition.Binary;
+                byte[] SBL3 = SBL3Partition.Binary;
 
                 UEFI UEFIPartition = null;
                 try
@@ -375,10 +378,6 @@ namespace WPinternals
                         throw new Exception("Error: Unexpected error during scanning for loaders.");
                     }
                 }
-
-
-                await LumiaUnlockBootloaderViewModel.LumiaRelockUEFI(Notifier, FFUPath, true, SetWorkingStatus, UpdateWorkingStatus, ExitSuccess, ExitFailure);
-
 
                 if (IsBootLoaderUnlocked)
                 // Flash phone in Flash app
