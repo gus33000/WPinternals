@@ -505,7 +505,7 @@ namespace WPinternals
 
                 if (Info.FlashAppProtocolVersionMajor >= 2)
                 {
-                    byte[] GPTChunk = LumiaV2UnlockBootViewModel.GetGptChunk(Phone, 0x20000); // TODO: Get proper profile FFU and get ChunkSizeInBytes
+                    byte[] GPTChunk = LumiaUnlockBootloaderViewModel.GetGptChunk(Phone, 0x20000); // TODO: Get proper profile FFU and get ChunkSizeInBytes
                     GPT GPT = new GPT(GPTChunk);
                     FlashPart Part;
                     List<FlashPart> FlashParts = new List<FlashPart>();
