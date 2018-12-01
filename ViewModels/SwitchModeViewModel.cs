@@ -212,10 +212,10 @@ namespace WPinternals
                             LogFile.Log("Rebooting phone to Flash mode", LogType.FileAndConsole);
                             break;
                         case PhoneInterfaces.Lumia_Label:
-                            DeviceMode = "Test";
+                            DeviceMode = "Flash";
                             IsSwitchingInterface = true;
-                            ModeSwitchProgressWrapper("Rebooting phone to Label mode...", null);
-                            LogFile.Log("Rebooting phone to Label mode", LogType.FileAndConsole);
+                            ModeSwitchProgressWrapper("First rebooting phone to Flash mode...", null);
+                            LogFile.Log("First rebooting phone to Flash mode (then attempt Label mode)", LogType.FileAndConsole);
                             break;
                         case PhoneInterfaces.Lumia_MassStorage:
                             DeviceMode = "Flash";
@@ -260,8 +260,11 @@ namespace WPinternals
                             ((NokiaFlashModel)CurrentModel).Shutdown();
                             ModeSwitchProgressWrapper("Shutting down phone...", null);
                             LogFile.Log("Shutting down phone", LogType.FileAndConsole);
-                            PhoneNotifier.WaitForRemoval().Wait();
-                            ModeSwitchSuccessWrapper();
+                            new Thread(() =>
+                            {
+                                PhoneNotifier.WaitForRemoval().Wait();
+                                //ModeSwitchSuccessWrapper(); TODO: Display UI
+                            }).Start();
                             break;
                         case PhoneInterfaces.Lumia_Normal:
                             ((NokiaPhoneModel)CurrentModel).ExecuteRawVoidMethod(RebootCommand);
@@ -276,12 +279,7 @@ namespace WPinternals
                             LogFile.Log("Rebooting phone to Bootloader mode", LogType.FileAndConsole);
                             break;
                         case PhoneInterfaces.Lumia_Label:
-                            BootModeFlagCommand[0x0F] = 0x59;
-                            ((NokiaPhoneModel)CurrentModel).ExecuteRawMethod(BootModeFlagCommand);
-                            ((NokiaPhoneModel)CurrentModel).ExecuteRawVoidMethod(RebootCommand);
-                            PhoneNotifier.NewDeviceArrived += NewDeviceArrived;
-                            ModeSwitchProgressWrapper("Rebooting phone to Label mode...", null);
-                            LogFile.Log("Rebooting phone to Label mode", LogType.FileAndConsole);
+                            SwitchFromFlashToLabelMode();
                             break;
                         case PhoneInterfaces.Lumia_Flash: // attempt to boot from limited flash to full flash
                             byte[] RebootToFlashCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x53 }; // NOKS
@@ -440,6 +438,10 @@ namespace WPinternals
             {
                 SwitchFromFlashToMassStorageMode(Continuation: true);
             }
+            else if ((CurrentMode == PhoneInterfaces.Lumia_Flash) && (TargetMode == PhoneInterfaces.Lumia_Label))
+            {
+                SwitchFromFlashToLabelMode(Continuation: true);
+            }
             else if ((CurrentMode == PhoneInterfaces.Lumia_Flash) && (TargetMode == PhoneInterfaces.Qualcomm_Download))
             {
                 byte[] RebootCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x52 };
@@ -481,6 +483,93 @@ namespace WPinternals
                         ModeSwitchErrorWrapper("Failed to switch to Mass Storage mode");
                         break;
                 }
+            }
+        }
+
+        private void SwitchFromFlashToLabelMode(bool Continuation = false)
+        {
+            string ProgressText;
+            if (Continuation)
+                ProgressText = "And now preparing to boot the phone to Label mode...";
+            else
+                ProgressText = "Preparing to boot the phone to Label mode...";
+
+            NokiaFlashModel FlashModel = (NokiaFlashModel)CurrentModel;
+            if (CurrentMode == PhoneInterfaces.Lumia_Bootloader)
+            {
+                try
+                {
+                    FlashModel.SwitchToFlashAppContext();
+                }
+                catch { }
+            }
+            PhoneInfo Info = FlashModel.ReadPhoneInfo(ExtendedInfo: true);
+
+            if (Info.MmosOverUsbSupported)
+            {
+                new Thread(() =>
+                {
+                    LogFile.BeginAction("SwitchToLabelMode");
+
+                    try
+                    {
+                        ModeSwitchProgressWrapper(ProgressText, null);
+                        string TempFolder = Environment.GetEnvironmentVariable("TEMP") + @"\WPInternals";
+                        string ENOSWPackage = LumiaDownloadModel.SearchENOSW(Info.Type, Info.Firmware);
+                        SetWorkingStatus("Downloading " + Info.Type + " Test Mode package...", MaxProgressValue: 100);
+                        DownloadEntry downloadEntry = new DownloadEntry(ENOSWPackage, TempFolder, null, null, null);
+
+                        downloadEntry.PropertyChanged += (object sender, System.ComponentModel.PropertyChangedEventArgs e) =>
+                        {
+                            if (e.PropertyName == "Progress")
+                            {
+                                int progress = (sender as DownloadEntry).Progress;
+                                ulong progressret;
+                                ulong.TryParse(progress.ToString(), out progressret);
+                                UpdateWorkingStatus(null, CurrentProgressValue: progressret);
+
+                                if (progress == 100)
+                                {
+                                    ModeSwitchProgressWrapper("Initializing Flash...", null);
+
+                                    string MMOSPath = TempFolder + "\\" + (sender as DownloadEntry).Name;
+
+                                    PhoneNotifier.NewDeviceArrived += NewDeviceArrived;
+                                    FileInfo info = new FileInfo(MMOSPath);
+                                    uint length = uint.Parse(info.Length.ToString());
+                                    int maximumbuffersize = 0x00240000;
+                                    uint totalcounts = (uint)Math.Truncate((decimal)length / maximumbuffersize);
+
+                                    SetWorkingStatus("Flashing Test Mode package...", MaxProgressValue: 100);
+
+                                    ProgressUpdater progressUpdater = new ProgressUpdater(totalcounts + 1, (int i, TimeSpan? time) => UpdateWorkingStatus(null, CurrentProgressValue: (ulong)i));
+                                    FlashModel.FlashMMOS(MMOSPath, progressUpdater);
+
+                                    SetWorkingStatus("And now booting phone to MMOS...", "If the phone stays on the lightning cog screen for a while, you may need to unplug and replug the phone to continue the boot process.");
+                                }
+                            }
+                        };
+                    }
+                    catch (Exception Ex)
+                    {
+                        LogFile.LogException(Ex);
+                        ModeSwitchErrorWrapper(Ex.Message);
+                    }
+                    
+                    LogFile.EndAction("SwitchToLabelMode");
+                }).Start();
+            }
+            else
+            {
+                byte[] BootModeFlagCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x58, 0x46, 0x57, 0x00, 0x55, 0x42, 0x46, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00 }; // NOKFW UBF
+                byte[] RebootCommand = new byte[] { 0x4E, 0x4F, 0x4B, 0x52 }; // NOKR
+
+                BootModeFlagCommand[0x0F] = 0x59;
+                ((NokiaPhoneModel)CurrentModel).ExecuteRawMethod(BootModeFlagCommand);
+                ((NokiaPhoneModel)CurrentModel).ExecuteRawVoidMethod(RebootCommand);
+                PhoneNotifier.NewDeviceArrived += NewDeviceArrived;
+                ModeSwitchProgressWrapper("Rebooting phone to Label mode", null);
+                LogFile.Log("Rebooting phone to Label mode", LogType.FileAndConsole);
             }
         }
 
