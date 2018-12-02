@@ -232,9 +232,9 @@ namespace WPinternals
                                     State = MachineState.LumiaUnlockBoot;
                                     if (DoUnlock)
                                     {
-                                            // This is a callback on the UI thread
-                                            // Resources are confirmed by user
-                                            this.ProfileFFUPath = ProfileFFUPath;
+                                        // This is a callback on the UI thread
+                                        // Resources are confirmed by user
+                                        this.ProfileFFUPath = ProfileFFUPath;
                                         this.EDEPath = EDEPath;
                                         this.SupportedFFUPath = SupportedFFUPath;
                                         StorePaths();
@@ -800,62 +800,69 @@ namespace WPinternals
 
         private void ValidateSupportedFfuPath()
         {
-            if (IsSupportedFfuNeeded)
+            try
             {
-                if (SupportedFFUPath == null)
+                if (IsSupportedFfuNeeded)
                 {
-                    IsSupportedFfuValid = true; // No visible warning when there is no SupportedFFU selected yet.
-                }
-                else
-                {
-
-                    if (!TargetHasNewFlashProtocol)
+                    if (SupportedFFUPath == null)
                     {
-                        if (App.Config.FFURepository.Any(e => ((e.Path == SupportedFFUPath) && (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V1.1-EFIESP").First().TargetVersions.Any(v => v.Description == e.OSVersion)))))
-                        {
-                            IsSupportedFfuValid = true;
-                        }
-                        else
-                        {
-                            FFU SupportedFFU = new FFU(SupportedFFUPath);
-                            if (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V1.1-EFIESP").First().TargetVersions.Any(v => v.Description == SupportedFFU.GetOSVersion()))
-                            {
-                                IsSupportedFfuValid = true;
-                            }
-                            else
-                            {
-                                IsSupportedFfuValid = false;
-                            }
-                        }
+                        IsSupportedFfuValid = true; // No visible warning when there is no SupportedFFU selected yet.
                     }
                     else
                     {
-                        if (App.Config.FFURepository.Any(e => ((e.Path == SupportedFFUPath) && (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == e.OSVersion)))))
+
+                        if (!TargetHasNewFlashProtocol)
                         {
-                            IsSupportedFfuValid = true;
-                        }
-                        else
-                        {
-                            FFU SupportedFFU = new FFU(SupportedFFUPath);
-                            if (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == SupportedFFU.GetOSVersion()))
+                            if (App.Config.FFURepository.Any(e => ((e.Path == SupportedFFUPath) && (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V1.1-EFIESP").First().TargetVersions.Any(v => v.Description == e.OSVersion)))))
                             {
                                 IsSupportedFfuValid = true;
                             }
                             else
                             {
-                                IsSupportedFfuValid = false;
+                                FFU SupportedFFU = new FFU(SupportedFFUPath);
+                                if (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V1.1-EFIESP").First().TargetVersions.Any(v => v.Description == SupportedFFU.GetOSVersion()))
+                                {
+                                    IsSupportedFfuValid = true;
+                                }
+                                else
+                                {
+                                    IsSupportedFfuValid = false;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            if (App.Config.FFURepository.Any(e => ((e.Path == SupportedFFUPath) && (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == e.OSVersion)))))
+                            {
+                                IsSupportedFfuValid = true;
+                            }
+                            else
+                            {
+                                FFU SupportedFFU = new FFU(SupportedFFUPath);
+                                if (App.PatchEngine.PatchDefinitions.Where(p => p.Name == "SecureBootHack-V2-EFIESP").First().TargetVersions.Any(v => v.Description == SupportedFFU.GetOSVersion()))
+                                {
+                                    IsSupportedFfuValid = true;
+                                }
+                                else
+                                {
+                                    IsSupportedFfuValid = false;
+                                }
                             }
                         }
                     }
                 }
-            }
-            else
-            {
-                IsSupportedFfuValid = true;
-            }
+                else
+                {
+                    IsSupportedFfuValid = true;
+                }
 
-            if (IsSupportedFfuValid && (SupportedFFUPath != null))
-                ValidatedSupportedFfuPath = SupportedFFUPath;
+                if (IsSupportedFfuValid && (SupportedFFUPath != null))
+                    ValidatedSupportedFfuPath = SupportedFFUPath;
+            }
+            catch
+            {
+                IsSupportedFfuValid = false;
+            }
         }
 
         private bool _IsSupportedFfuNeeded = false;
