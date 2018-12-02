@@ -1617,7 +1617,7 @@ namespace WPinternals
 
                 bool ShouldApplyOldEFIESPMethod = true;
                 if (IsSpecB)
-                    ShouldApplyOldEFIESPMethod = !ExperimentalSpecAEFIESPUnlock;
+                    ShouldApplyOldEFIESPMethod = !ExperimentalSpecBEFIESPUnlock;
                 else
                     ShouldApplyOldEFIESPMethod = !ExperimentalSpecAEFIESPUnlock;
 
