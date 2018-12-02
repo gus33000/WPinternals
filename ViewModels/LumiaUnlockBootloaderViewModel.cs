@@ -117,7 +117,12 @@ namespace WPinternals
             {
                 if (Notifier.CurrentModel is NokiaFlashModel)
                 {
-                    await LumiaUnlockBootloaderViewModel.LumiaRelockUEFI(Notifier, FFUPath, true, SetWorkingStatus, UpdateWorkingStatus, ExitSuccess, ExitFailure);
+                    await LumiaUnlockBootloaderViewModel.LumiaRelockUEFI(Notifier, FFUPath, true, SetWorkingStatus, UpdateWorkingStatus, null, (string Message, string SubMessage) =>
+                    {
+                        ExitFailure(Message, SubMessage);
+                        LogFile.EndAction("RelockBootloader");
+                        return;
+                    });
 
                     if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Bootloader && Notifier.CurrentInterface != PhoneInterfaces.Lumia_Flash)
                         await Notifier.WaitForArrival();
@@ -530,22 +535,35 @@ namespace WPinternals
 
                 NokiaFlashModel FlashModel = (NokiaFlashModel)Notifier.CurrentModel;
                 if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Flash && FlashModel.ReadParam("FS")[3] > 0)
-                    ExitSuccess("The phone is relocked", "NOTE: You need to flash a stock ROM because you recovered a phone from a bootloader unlock failure.");
+                    ExitSuccess("Bootloader is restored", "NOTE: You need to flash a stock ROM because you recovered a phone from a bootloader unlock failure.");
                 else
                 {
                     SetWorkingStatus("Booting phone...");
 
-                    if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Normal)
-                        await Notifier.WaitForArrival();
+                    if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Bootloader)
+                        ((NokiaFlashModel)Notifier.CurrentModel).ContinueBoot();
 
                     if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Normal)
                         await Notifier.WaitForArrival();
 
+                    if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Bootloader)
+                        ((NokiaFlashModel)Notifier.CurrentModel).ContinueBoot();
+
                     if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Normal)
+                        await Notifier.WaitForArrival();
+
+                    if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Bootloader)
+                        ((NokiaFlashModel)Notifier.CurrentModel).ContinueBoot();
+
+                    if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Normal)
+                    {
                         ExitFailure("Failed to relock phone", "Your phone is half relocked. You may need to reflash a stock ROM");
+                        LogFile.EndAction("RelockBootloader");
+                        return;
+                    }
 
-                    LogFile.Log("Phone is relocked", LogType.FileAndConsole);
-                    ExitSuccess("The phone is relocked", "NOTE: Make sure the phone properly boots and shuts down at least once before you unlock it again");
+                    LogFile.Log("Bootloader restored!", LogType.FileAndConsole);
+                    ExitSuccess("Bootloader restored successfully!");
                 }
             }
             catch (Exception Ex)
@@ -1135,20 +1153,39 @@ namespace WPinternals
                     throw new WPinternalsException("Phone is in an unexpected mode.");
                 }
 
-                await LumiaUnlockBootloaderViewModel.LumiaUnlockUEFI(Notifier, FFUPath, LoadersPath, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitSuccess, ExitFailure);
+                await LumiaUnlockBootloaderViewModel.LumiaUnlockUEFI(Notifier, FFUPath, LoadersPath, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, null, (string Message, string SubMessage) =>
+                {
+                    ExitFailure(Message, SubMessage);
+                    LogFile.EndAction("UnlockBootloader");
+                    return;
+                });
 
-                // Differences with unlocked:
-                //  No patch to partitions
-                //  Hack removal
-                //  SBL3 flag removal
+                SetWorkingStatus("Booting phone...");
 
-                // If bootloader secure => softbrick
-                //                      => flash in DLOAD
-                //                      => Reboot
-                //                      Phone will end up in Flashmode or bootloader => Switch to flash for part 2
-                //
-                // If bootloader insecure => flash in Flash
-                //                        Phone will be kept in Flash mode for part 2
+                if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Bootloader)
+                    ((NokiaFlashModel)Notifier.CurrentModel).ContinueBoot();
+
+                if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Normal)
+                    await Notifier.WaitForArrival();
+
+                if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Bootloader)
+                    ((NokiaFlashModel)Notifier.CurrentModel).ContinueBoot();
+
+                if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Normal)
+                    await Notifier.WaitForArrival();
+
+                if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Bootloader)
+                    ((NokiaFlashModel)Notifier.CurrentModel).ContinueBoot();
+
+                if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Normal)
+                {
+                    ExitFailure("Failed to unlock phone", "Your phone is half unlocked. You may need to reflash a stock ROM");
+                    LogFile.EndAction("UnlockBootloader");
+                    return;
+                }
+
+                LogFile.Log("Bootloader unlocked!", LogType.FileAndConsole);
+                ExitSuccess("Bootloader unlocked successfully!", null);
             }
             catch (Exception Ex)
             {
@@ -1498,11 +1535,8 @@ namespace WPinternals
                     }
                 }
 
-                if (IsSpecB)
-                {
-                    LogFile.Log("Phone is relocked", LogType.FileAndConsole);
-                    ExitSuccess("The phone is relocked", "NOTE: Make sure the phone properly boots and shuts down at least once before you unlock it again");
-                }
+                LogFile.Log("Phone is relocked", LogType.FileAndConsole);
+                ExitSuccess("The phone is relocked", "NOTE: Make sure the phone properly boots and shuts down at least once before you unlock it again");
             }
             catch (Exception Ex)
             {
