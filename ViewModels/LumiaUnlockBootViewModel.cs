@@ -42,7 +42,6 @@ namespace WPinternals
     {
         private PhoneNotifierViewModel PhoneNotifier;
         private Action Callback;
-        private bool IsFlashingDone = false;
         private string FFUPath;
         private string LoadersPath;
         private string SBL3Path;
@@ -99,33 +98,17 @@ namespace WPinternals
                     case PhoneInterfaces.Lumia_Normal:
                     case PhoneInterfaces.Lumia_Label:
                         IsSwitchingInterface = false;
-                        if (IsFlashingDone)
+                        if (DoUnlock)
                         {
-                            if (DoUnlock)
-                            {
-                                LogFile.Log("Bootloader successfully unlocked!");
-                                ActivateSubContext(new MessageViewModel("Bootloader succesfully unlocked!", Exit));
-                            }
-                            else
-                            {
-                                LogFile.Log("Bootloader successfully restored!");
-                                ActivateSubContext(new MessageViewModel("Bootloader succesfully restored!", Exit));
-                            }
+                            // Display View to switch to Flash mode
+                            LogFile.Log("Start unlock. Phone needs to switch to Flash-mode");
+                            ActivateSubContext(new MessageViewModel("In order to start unlocking the bootloader, the phone needs to be switched to Flash-mode.", SwitchToFlashMode, Exit));
                         }
                         else
                         {
-                            if (DoUnlock)
-                            {
-                                // Display View to switch to Flash mode
-                                LogFile.Log("Start unlock. Phone needs to switch to Flash-mode");
-                                ActivateSubContext(new MessageViewModel("In order to start unlocking the bootloader, the phone needs to be switched to Flash-mode.", SwitchToFlashMode, Exit));
-                            }
-                            else
-                            {
-                                // Display View to switch to Flash mode
-                                LogFile.Log("Start boot restore. Phone needs to switch to Flash-mode");
-                                ActivateSubContext(new MessageViewModel("In order to start restoring the bootloader, the phone needs to be switched to Flash-mode.", SwitchToFlashMode, Exit));
-                            }
+                            // Display View to switch to Flash mode
+                            LogFile.Log("Start boot restore. Phone needs to switch to Flash-mode");
+                            ActivateSubContext(new MessageViewModel("In order to start restoring the bootloader, the phone needs to be switched to Flash-mode.", SwitchToFlashMode, Exit));
                         }
                         break;
                     case PhoneInterfaces.Lumia_Flash:
@@ -255,7 +238,7 @@ namespace WPinternals
                                                 if (DoFixBoot)
                                                     await LumiaV2UnlockBootViewModel.LumiaV2FixBoot(PhoneNotifier, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
                                                 else
-                                                    await LumiaUnlockBootloaderViewModel.LumiaUnlockUEFI(PhoneNotifier, ProfileFFUPath, EDEPath, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
+                                                    await LumiaUnlockBootloaderViewModel.LumiaV2UnlockUEFI(PhoneNotifier, ProfileFFUPath, EDEPath, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
                                             });
                                     }
                                     else
@@ -272,7 +255,7 @@ namespace WPinternals
 
                                             LogFile.Log("Profile FFU: " + ProfileFFU.Path);
 
-                                            await LumiaUnlockBootloaderViewModel.LumiaRelockUEFI(PhoneNotifier, ProfileFFU.Path, true, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
+                                            await LumiaUnlockBootloaderViewModel.LumiaV2RelockUEFI(PhoneNotifier, ProfileFFU.Path, true, SetWorkingStatus, UpdateWorkingStatus, ExitMessage, ExitMessage);
                                         });
                                     }
                                 };
@@ -501,7 +484,6 @@ namespace WPinternals
         private void Exit()
         {
             IsSwitchingInterface = false; // From here on a device will be forced to Flash mode again on this screen which is meant for flashing
-            IsFlashingDone = false;
 
             FFUPath = null;
             LoadersPath = null;

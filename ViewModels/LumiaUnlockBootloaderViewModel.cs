@@ -97,6 +97,78 @@ namespace WPinternals
             }
         }
 
+        internal static async Task LumiaV2RelockUEFI(PhoneNotifierViewModel Notifier, string FFUPath = null, bool DoResetFirst = true, SetWorkingStatus SetWorkingStatus = null, UpdateWorkingStatus UpdateWorkingStatus = null, ExitSuccess ExitSuccess = null, ExitFailure ExitFailure = null)
+        {
+            if (SetWorkingStatus == null) SetWorkingStatus = (m, s, v, a, st) => { };
+            if (UpdateWorkingStatus == null) UpdateWorkingStatus = (m, s, v, st) => { };
+            if (ExitSuccess == null) ExitSuccess = (m, s) => { };
+            if (ExitFailure == null) ExitFailure = (m, s) => { };
+
+            await LumiaUnlockBootloaderViewModel.LumiaRelockUEFI(Notifier, FFUPath, DoResetFirst, SetWorkingStatus, UpdateWorkingStatus, ExitSuccess, ExitFailure);
+
+            SetWorkingStatus("Booting phone...");
+            await Notifier.WaitForArrival();
+
+            if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Bootloader)
+                ((NokiaFlashModel)Notifier.CurrentModel).ContinueBoot();
+
+            if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Normal)
+                await Notifier.WaitForArrival();
+
+            if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Bootloader)
+                ((NokiaFlashModel)Notifier.CurrentModel).ContinueBoot();
+
+            if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Normal)
+                await Notifier.WaitForArrival();
+
+            if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Bootloader)
+                ((NokiaFlashModel)Notifier.CurrentModel).ContinueBoot();
+            
+            if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Normal)
+            {
+                ExitFailure("Failed to relock phone", "Your phone is half relocked. You may need to reflash a stock ROM");
+                return;
+            }
+            
+            ExitSuccess("Bootloader restored successfully!");
+        }
+
+        internal static async Task LumiaV2UnlockUEFI(PhoneNotifierViewModel Notifier, string ProfileFFUPath, string EDEPath, string SupportedFFUPath, SetWorkingStatus SetWorkingStatus = null, UpdateWorkingStatus UpdateWorkingStatus = null, ExitSuccess ExitSuccess = null, ExitFailure ExitFailure = null)
+        {
+            if (SetWorkingStatus == null) SetWorkingStatus = (m, s, v, a, st) => { };
+            if (UpdateWorkingStatus == null) UpdateWorkingStatus = (m, s, v, st) => { };
+            if (ExitSuccess == null) ExitSuccess = (m, s) => { };
+            if (ExitFailure == null) ExitFailure = (m, s) => { };
+
+            await LumiaUnlockBootloaderViewModel.LumiaUnlockUEFI(Notifier, ProfileFFUPath, EDEPath, SupportedFFUPath, SetWorkingStatus, UpdateWorkingStatus, ExitSuccess, ExitFailure);
+
+            SetWorkingStatus("Booting phone...");
+            await Notifier.WaitForArrival();
+
+            if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Bootloader)
+                ((NokiaFlashModel)Notifier.CurrentModel).ContinueBoot();
+
+            if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Normal)
+                await Notifier.WaitForArrival();
+
+            if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Bootloader)
+                ((NokiaFlashModel)Notifier.CurrentModel).ContinueBoot();
+
+            if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Normal)
+                await Notifier.WaitForArrival();
+
+            if (Notifier.CurrentInterface == PhoneInterfaces.Lumia_Bootloader)
+                ((NokiaFlashModel)Notifier.CurrentModel).ContinueBoot();
+
+            if (Notifier.CurrentInterface != PhoneInterfaces.Lumia_Normal)
+            {
+                ExitFailure("Failed to unlock phone", "Your phone is half unlocked. You may need to reflash a stock ROM");
+                return;
+            }
+            
+            ExitSuccess("Bootloader unlocked successfully!", null);
+        }
+
         // Magic!
         // Platform Secure Boot Hack for Spec A devices
         //
@@ -1536,7 +1608,6 @@ namespace WPinternals
                 }
 
                 LogFile.Log("Phone is relocked", LogType.FileAndConsole);
-                ExitSuccess("The phone is relocked", "NOTE: Make sure the phone properly boots and shuts down at least once before you unlock it again");
             }
             catch (Exception Ex)
             {
@@ -1954,7 +2025,6 @@ namespace WPinternals
                 }
 
                 LogFile.Log("Bootloader unlocked!", LogType.FileAndConsole);
-                ExitSuccess("Bootloader unlocked successfully!", null);
             }
             catch (Exception Ex)
             {
