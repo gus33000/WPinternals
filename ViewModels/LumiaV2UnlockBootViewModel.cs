@@ -956,6 +956,16 @@ namespace WPinternals
                 Model = (NokiaFlashModel)Notifier.CurrentModel;
             }
 
+            // The payloads must be ordered by the number of locations
+            //
+            // FlashApp processes payloads like this:
+            // - First payloads which are with one location, those can be sent in bulk
+            // - Then payloads with more than one location, those should not be sent in bulk
+            //
+            // If you do not order payloads like this, you will get an error, most likely hash mismatch
+            //
+            FlashingPayload[] payloads = GetOptimizedPayloads(FlashParts, FFU.ChunkSize, (uint)(Info.WriteBufferSize / FFU.ChunkSize), SetWorkingStatus, UpdateWorkingStatus).OrderBy(x => x.TargetLocations.Count()).ToArray();
+
             bool AssumeImageHeaderFallsInGap = true;
             bool AllocateAsyncBuffersOnPhone = true;
             bool AllocateBackupBuffersOnPhone = false;
@@ -1058,16 +1068,6 @@ namespace WPinternals
 
                 CombinedFFUHeaderSize = FFU.HeaderSize;
                 FfuHeader = new byte[CombinedFFUHeaderSize];
-
-                // The payloads must be ordered by the number of locations
-                //
-                // FlashApp processes payloads like this:
-                // - First payloads which are with one location, those can be sent in bulk
-                // - Then payloads with more than one location, those should not be sent in bulk
-                //
-                // If you do not order payloads like this, you will get an error, most likely hash mismatch
-                //
-                FlashingPayload[] payloads = GetOptimizedPayloads(FlashParts, FFU.ChunkSize, (uint)(Info.WriteBufferSize / FFU.ChunkSize), SetWorkingStatus, UpdateWorkingStatus).OrderBy(x => x.TargetLocations.Count()).ToArray();
 
                 UInt32 TotalPayloadCount = (uint)payloads.Count();
                 bool HeadersFull;
