@@ -1059,7 +1059,15 @@ namespace WPinternals
                 CombinedFFUHeaderSize = FFU.HeaderSize;
                 FfuHeader = new byte[CombinedFFUHeaderSize];
 
-                FFUPayloadOptimization.FlashingPayload[] payloads = FFUPayloadOptimization.GetOptimizedPayloads(FlashParts, FFU.ChunkSize, SetWorkingStatus, UpdateWorkingStatus);
+                // The payloads must be ordered by the number of locations
+                //
+                // FlashApp processes payloads like this:
+                // - First payloads which are with one location, those can be sent in bulk
+                // - Then payloads with more than one location, those should not be sent in bulk
+                //
+                // If you do not order payloads like this, you will get an error, most likely hash mismatch
+                //
+                FlashingPayload[] payloads = GetOptimizedPayloads(FlashParts, FFU.ChunkSize, (uint)(Info.WriteBufferSize / FFU.ChunkSize), SetWorkingStatus, UpdateWorkingStatus).OrderBy(x => x.TargetLocations.Count()).ToArray();
 
                 UInt32 TotalPayloadCount = (uint)payloads.Count();
                 bool HeadersFull;
@@ -1216,7 +1224,7 @@ namespace WPinternals
 
                     for (UInt32 i = 0; i < FlashingPhasePayloadCount; i++)
                     {
-                        FFUPayloadOptimization.FlashingPayload payload = payloads[FlashingPhaseStartPayloadIndex + i];
+                        FlashingPayload payload = payloads[FlashingPhaseStartPayloadIndex + i];
 
                         ByteOperations.WriteUInt32(UefiMemorySim.Buffer, StoreHeaderAllocation.ContentStart + NewWriteDescriptorOffset + 0x00, (UInt32)payload.TargetLocations.Count()); // Location count
                         ByteOperations.WriteUInt32(UefiMemorySim.Buffer, StoreHeaderAllocation.ContentStart + NewWriteDescriptorOffset + 0x04, payload.ChunkCount);                      // Chunk count
@@ -1270,9 +1278,11 @@ namespace WPinternals
 
                         // Send custom payload
                         Step = 3;
+                        Int32 payloadCount = 0;
+                        byte[] payloadBuffer = new byte[Info.WriteBufferSize];
+                        bool sendPayload = false;
                         for (Int32 i = FlashInProgress ? 0 : -1; i < FlashingPhasePayloadCount; i++)
                         {
-                            LogFile.Log("Processing new payload");
                             string NewProgressText = "Flashing resources...";
                             if (!FlashInProgress)
                             {
@@ -1298,44 +1308,88 @@ namespace WPinternals
                             {
                                 Step = 5;
 
-                                FFUPayloadOptimization.FlashingPayload payload = payloads[FlashingPhaseStartPayloadIndex + i];
+                                FlashingPayload payload = payloads[FlashingPhaseStartPayloadIndex + i];
+                                
+                                if (payloadCount == (Info.WriteBufferSize / FFU.ChunkSize - 1))
+                                {
+                                    sendPayload = true;
+                                }
 
-                                byte[] payloadBuffer = new byte[FFU.ChunkSize * payload.ChunkCount];
+                                if (FlashingPhaseStartPayloadIndex + i + 1 >= FlashingPhasePayloadCount)
+                                {
+                                    sendPayload = true;
+                                    byte[] tmpBuffer = new byte[(payloadCount + 1) * FFU.ChunkSize];
+                                    System.Buffer.BlockCopy(payloadBuffer, 0, tmpBuffer, 0, payloadCount * FFU.ChunkSize);
+                                    payloadBuffer = tmpBuffer;
+                                }
+
+                                // Check if the next payload contains more than one chunk
+                                if (!sendPayload && FlashingPhaseStartPayloadIndex + i + 1 < FlashingPhasePayloadCount && (payloads[FlashingPhaseStartPayloadIndex + i + 1].ChunkCount != 1 || payloads[FlashingPhaseStartPayloadIndex + i + 1].TargetLocations.Count() != 1))
+                                {
+                                    sendPayload = true;
+                                    byte[] tmpBuffer = new byte[(payloadCount + 1) * FFU.ChunkSize];
+                                    System.Buffer.BlockCopy(payloadBuffer, 0, tmpBuffer, 0, payloadCount * FFU.ChunkSize);
+                                    payloadBuffer = tmpBuffer;
+                                }
 
                                 // We prepare the buffer setup above with all consecutive chunks we have to send in
                                 // We can't send a single chunk otherwise we would get 0x1007: Payload data does not contain all data
-                                for (uint j = 0; j < payload.ChunkCount; j++)
+                                if (payload.ChunkCount != 1)
                                 {
-                                    StreamIndex = (Int32)payload.StreamIndexes[j];
+                                    NewProgressText = "Flashing common resources...";
+                                    payloadBuffer = new byte[payload.ChunkCount * FFU.ChunkSize];
+                                    for (uint j = 0; j < payload.ChunkCount; j++)
+                                    {
+                                        StreamIndex = (Int32)payload.StreamIndexes[j];
+                                        FlashPart flashPart = FlashParts[StreamIndex];
+                                        CurrentStream = flashPart.Stream;
+                                        CurrentStream.Seek(payload.StreamLocations[j], SeekOrigin.Begin);
+
+                                        Step = 6;
+                                        Array.Clear(payloadBuffer, (Int32)(FFU.ChunkSize * j), FFU.ChunkSize); // Not really needed anymore?
+
+                                        Step = 7;
+                                        CurrentStream.Read(payloadBuffer, (Int32)(FFU.ChunkSize * j), FFU.ChunkSize);
+                                    }
+                                }
+
+                                if (payload.TargetLocations.Count() != 1)
+                                {
+                                    NewProgressText = "Flashing common resources...";
+                                    payloadBuffer = new byte[FFU.ChunkSize];
+                                }
+
+                                if (payload.ChunkCount == 1)
+                                {
+                                    StreamIndex = (Int32)payload.StreamIndexes[0];
                                     FlashPart flashPart = FlashParts[StreamIndex];
                                     CurrentStream = flashPart.Stream;
-                                    CurrentStream.Seek(payload.StreamLocations[j], SeekOrigin.Begin);
+                                    CurrentStream.Seek(payload.StreamLocations[0], SeekOrigin.Begin);
 
-                                    Step = 6;
-                                    Array.Clear(payloadBuffer, 0, Buffer.Length); // Not really needed anymore?
+                                    if (payload.TargetLocations.Count() == 1 && !string.IsNullOrEmpty(flashPart.ProgressText))
+                                        NewProgressText = flashPart.ProgressText;
 
-                                    Step = 7;
-                                    CurrentStream.Read(payloadBuffer, (Int32)(FFU.ChunkSize * j), FFU.ChunkSize);
+                                    CurrentStream.Read(payloadBuffer, (Int32)(FFU.ChunkSize * payloadCount), FFU.ChunkSize);
                                 }
 
                                 Step = 8;
                                 // This may fail. Normally with WPinternalsException for Invalid Hash or Data not aligned.
                                 // Or it may fail with a BadConnectionException when the phone crashes and drops the connection.
-
-                                //
-                                // Note
-                                //
-                                // Right now the code doesn't work to find a flashing profile, at least last time I checked, it only works if a flashing profile already exists
-                                // Didn't find time to look into why it's doing so.
-                                //
-                                // For testing I dumped MainOS.bin from my device FFU file, and I went into Flash section -> Flash manual partitions and picked the MainOS.bin file and sent it
-                                // I commented out in the flash partitions function the code to override UEFI NV storage, so if the code screws up, it doesn't write bad data to GPT or NV
-                                // As a result the device will go into red flash app when flashing is successful.
-
-                                // This fails when sending multiple chunks with 0x1003: Hash mismatch
-                                Model.SendFfuPayloadV2(payloadBuffer, ShowProgress ? (Int32)((FlashingPhaseStartPayloadIndex + i + 1) * 100 / payloads.Count()) : 0);
+                                
+                                payloadCount++;
                             }
+
                             UpdateWorkingStatus(NewProgressText, null, (UInt64?)(FlashingPhaseStartPayloadIndex + i + 1), WPinternalsStatus.Flashing);
+                            
+                            if (i != -1 && sendPayload)
+                            {
+                                // This fails when sending multiple chunks per payload with 0x1003: Hash mismatch
+                                Model.SendFfuPayloadV2(payloadBuffer, ShowProgress ? (Int32)((FlashingPhaseStartPayloadIndex + i + 1) * 100 / payloads.Count()) : 0);
+                                sendPayload = false;
+                                payloadCount = 0;
+                                payloadBuffer = new byte[Info.WriteBufferSize];
+                            }
+
                             DestinationChunkIndex++;
                         }
 
@@ -1737,6 +1791,125 @@ namespace WPinternals
                 ExitSuccess("Flash succeeded!", null);
             else
                 throw new WPinternalsException("Custom flash failed");
+        }
+
+        internal class FlashingPayload
+        {
+            public UInt32 ChunkCount;
+            public byte[][] ChunkHashes;
+            public UInt32[] TargetLocations;
+            public UInt32[] StreamIndexes;
+            public UInt32[] StreamLocations;
+
+            public FlashingPayload(UInt32 ChunkCount, byte[][] ChunkHashes, UInt32[] TargetLocations, UInt32[] StreamIndexes, UInt32[] StreamLocations)
+            {
+                this.ChunkCount = ChunkCount;
+                this.ChunkHashes = ChunkHashes;
+                this.TargetLocations = TargetLocations;
+                this.StreamIndexes = StreamIndexes;
+                this.StreamLocations = StreamLocations;
+            }
+
+            public UInt32 GetSecurityHeaderSize()
+            {
+                return 0x20 * (UInt32)ChunkHashes.Count();
+            }
+
+            public UInt32 GetStoreHeaderSize()
+            {
+                return 0x08 * ((UInt32)TargetLocations.Count() + 1);
+            }
+        }
+        
+        //
+        // Function to fall back into the legacy implementation of custom flash, to test the modifications done in the custom flash function
+        // in LumiaV2UnlockBootViewModel
+        //
+        internal static FlashingPayload[] GetNonOptimizedPayloads(List<FlashPart> flashParts, Int32 chunkSize, UInt32 MaximumChunkCount, SetWorkingStatus SetWorkingStatus = null, UpdateWorkingStatus UpdateWorkingStatus = null)
+        {
+            long TotalProcess1 = 0;
+            for (Int32 j = 0; j < flashParts.Count; j++)
+            {
+                FlashPart flashPart = flashParts[j];
+                TotalProcess1 += flashPart.Stream.Length / chunkSize;
+            }
+
+            ulong CurrentProcess1 = 0;
+            SetWorkingStatus("Hashing resources...", "Initializing flash...", (UInt64)TotalProcess1, Status: WPinternalsStatus.Initializing);
+
+            var crypto = System.Security.Cryptography.SHA256.Create();
+            List<FlashingPayload> flashingPayloads = new List<FlashingPayload>();
+            if (flashParts == null)
+                return flashingPayloads.ToArray();
+            for (UInt32 j = 0; j < flashParts.Count; j++)
+            {
+                FlashPart flashPart = flashParts[(Int32)j];
+                flashPart.Stream.Seek(0, SeekOrigin.Begin);
+                var totalChunkCount = flashPart.Stream.Length / chunkSize;
+                var br = new BinaryReader(flashPart.Stream);
+                for (UInt32 i = 0; i < totalChunkCount; i++)
+                {
+                    UpdateWorkingStatus("Hashing resources...", "Initializing flash...", (UInt64)CurrentProcess1, WPinternalsStatus.Initializing);
+                    byte[] buffer = new byte[chunkSize];
+                    br.Read(buffer, 0, chunkSize);
+                    flashingPayloads.Add(new FlashingPayload(1, new byte[][] { crypto.ComputeHash(buffer) }, new UInt32[] { (flashPart.StartSector * 0x200 / (UInt32)chunkSize) + i }, new UInt32[] { j }, new UInt32[] { i * (UInt32)chunkSize }));
+                    CurrentProcess1++;
+                }
+            }
+
+            return flashingPayloads.ToArray();
+        }
+
+        //
+        // This function finds in an optimized way the number of duplicate chunks in a given stream, and returns
+        // a list of elements, defining a chunk occurence in said stream and the chunk precomputed SHA256 hash.
+        //
+        internal static FlashingPayload[] GetOptimizedPayloads(List<FlashPart> flashParts, Int32 chunkSize, UInt32 MaximumChunkCount, SetWorkingStatus SetWorkingStatus = null, UpdateWorkingStatus UpdateWorkingStatus = null)
+        {
+            long TotalProcess1 = 0;
+            for (Int32 j = 0; j < flashParts.Count; j++)
+            {
+                FlashPart flashPart = flashParts[j];
+                TotalProcess1 += flashPart.Stream.Length / chunkSize;
+            }
+
+            ulong CurrentProcess1 = 0;
+            SetWorkingStatus("Hashing resources...", "Initializing flash...", (UInt64)TotalProcess1, Status: WPinternalsStatus.Initializing);
+
+            var crypto = System.Security.Cryptography.SHA256.Create();
+            List<FlashingPayload> flashingPayloads = new List<FlashingPayload>();
+            if (flashParts == null)
+                return flashingPayloads.ToArray();
+            for (UInt32 j = 0; j < flashParts.Count; j++)
+            {
+                FlashPart flashPart = flashParts[(Int32)j];
+                flashPart.Stream.Seek(0, SeekOrigin.Begin);
+                var totalChunkCount = flashPart.Stream.Length / chunkSize;
+                var br = new BinaryReader(flashPart.Stream);
+                for (UInt32 i = 0; i < totalChunkCount; i++)
+                {
+                    UpdateWorkingStatus("Hashing resources...", "Initializing flash...", (UInt64)CurrentProcess1, WPinternalsStatus.Initializing);
+                    byte[] buffer = new byte[chunkSize];
+                    br.Read(buffer, 0, chunkSize);
+                    var hash = crypto.ComputeHash(buffer);
+
+                    if (flashingPayloads.Any(x => ByteOperations.Compare(x.ChunkHashes.First(), hash)))
+                    {
+                        var payloadIndex = flashingPayloads.FindIndex(x => ByteOperations.Compare(x.ChunkHashes.First(), hash));
+                        var locationList = flashingPayloads[payloadIndex].TargetLocations.ToList();
+                        locationList.Add((flashPart.StartSector * 0x200 / (UInt32)chunkSize) + i);
+                        flashingPayloads[payloadIndex].TargetLocations = locationList.ToArray();
+                    }
+                    else
+                    {
+                        flashingPayloads.Add(new FlashingPayload(1, new byte[][] { hash }, new UInt32[] { (flashPart.StartSector * 0x200 / (UInt32)chunkSize) + i }, new UInt32[] { j }, new UInt32[] { i * (UInt32)chunkSize }));
+                    }
+
+                    CurrentProcess1++;
+                }
+            }
+
+            return flashingPayloads.ToArray();
         }
 
         internal static string GetProgrammerPath(byte[] RKH, string Type)
