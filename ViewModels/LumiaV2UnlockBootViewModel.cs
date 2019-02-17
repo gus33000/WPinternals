@@ -792,7 +792,6 @@ namespace WPinternals
             if (UpdateType != 0)
                 throw new WPinternalsException("Only Full Flash images supported");
 
-            UInt32 ChunkCount = 1; // Always flash one extra chunk on the GPT (for purpose of testing and for making sure that first chunk does not contain all zero's).
             if (FlashParts != null)
             {
                 foreach (FlashPart Part in FlashParts)
@@ -808,8 +807,6 @@ namespace WPinternals
                         if ((Part.Stream.Length % FFU.ChunkSize) != 0)
                             throw new ArgumentException("Invalid Data length");
                     }
-
-                    ChunkCount += (UInt32)(Part.Stream.Length / FFU.ChunkSize);
                 }
             }
 
@@ -1043,7 +1040,6 @@ namespace WPinternals
                 StoreHeaderAllocation = null;
                 PartialHeaderAllocation = null;
                 UInt32 DestinationChunkIndex = 0;
-                UInt32 DestinationChunkOffset = 0;
 
                 // Create memory map
                 UefiMemorySim.Reset();
@@ -1062,13 +1058,14 @@ namespace WPinternals
 
                 CombinedFFUHeaderSize = FFU.HeaderSize;
                 FfuHeader = new byte[CombinedFFUHeaderSize];
-                UInt32 TotalChunkCount = ChunkCount;
+
+                FFUPayloadOptimization.FlashingPayload[] payloads = FFUPayloadOptimization.GetOptimizedPayloads(FlashParts, FFU.ChunkSize, SetWorkingStatus, UpdateWorkingStatus);
+
+                UInt32 TotalPayloadCount = (uint)payloads.Count();
                 bool HeadersFull;
                 int FlashingPhase = 0;
-                int FlashingPhaseStartStreamIndex = -1;
-                long FlashingPhaseStartStreamPosition = 0;
-                UInt32 FlashingPhaseStartChunkIndex = 0;
-                UInt32 FlashingPhaseChunkCount;
+                UInt32 FlashingPhaseStartPayloadIndex = 0;
+                UInt32 FlashingPhasePayloadCount = 0;
                 bool FlashInProgress = false;
                 byte[] Buffer = new byte[FFU.ChunkSize];
                 LastHeaderV2Size = 0;
@@ -1114,7 +1111,7 @@ namespace WPinternals
                             UInt64 Position = CombinedFFUHeaderSize;
                             byte[] FlashPayload;
                             int ChunkIndex = 0;
-                            TotalChunkCount += (UInt32)FFU.TotalChunkCount;
+                            UInt32 TotalChunkCount = (UInt32)FFU.TotalChunkCount;
 
                             // Protocol v2
                             FlashPayload = new byte[Info.WriteBufferSize];
@@ -1164,20 +1161,34 @@ namespace WPinternals
                         NewHashOffset += HashTableSize;
                     }
 
-                    // Determine number of chunks for this phase
+                    // Determine available space and number of payloads to send for this phase
                     UInt32 HashSpace = (UInt32)(FFU.SecurityHeader.Length - NewHashOffset);
-                    UInt32 FreeHashCount = HashSpace / 0x20; // Round down automatically
                     UInt32 DescriptorSpace = (UInt32)(FFU.StoreHeader.Length - NewWriteDescriptorOffset);
-                    UInt32 FreeDescriptorCount = DescriptorSpace / 0x10;
-                    FlashingPhaseChunkCount = FreeHashCount < FreeDescriptorCount ? FreeHashCount : FreeDescriptorCount;
-                    if ((ChunkCount - FlashingPhaseStartChunkIndex) <= FlashingPhaseChunkCount)
-                        FlashingPhaseChunkCount = ChunkCount - FlashingPhaseStartChunkIndex;
-                    else
-                        HeadersFull = true;
 
-                    HashTableSize += (FlashingPhaseChunkCount * 0x20);
-                    WriteDescriptorCount += FlashingPhaseChunkCount;
-                    WriteDescriptorLength += (FlashingPhaseChunkCount * 0x10);
+                    FlashingPhasePayloadCount = 0;
+
+                    // Always flash one extra chunk on the GPT (for purpose of testing and for making sure that first chunk does not contain all zero's).
+                    UInt32 SecurityHeaderSize = FlashInProgress ? 0 : 0x20u;
+                    UInt32 StoreHeaderSize = FlashInProgress ? 0 : 0x10u;
+                    for (UInt32 i = FlashingPhaseStartPayloadIndex; i < payloads.Count(); i++)
+                    {
+                        UInt32 NewSecurityHeaderSize = SecurityHeaderSize + payloads[i].GetSecurityHeaderSize();
+                        UInt32 NewStoreHeaderSize = StoreHeaderSize + payloads[i].GetStoreHeaderSize();
+
+                        if (NewSecurityHeaderSize > HashSpace || NewStoreHeaderSize > DescriptorSpace)
+                        {
+                            HeadersFull = true;
+                            break;
+                        }
+
+                        FlashingPhasePayloadCount += 1;
+                        SecurityHeaderSize = NewSecurityHeaderSize;
+                        StoreHeaderSize = NewStoreHeaderSize;
+                    }
+
+                    HashTableSize += SecurityHeaderSize;
+                    WriteDescriptorCount += (UInt32)FlashingPhasePayloadCount + (FlashInProgress ? 0 : 1u);
+                    WriteDescriptorLength += StoreHeaderSize;
 
                     if (!ClearFlashingStatusAtEnd || HeadersFull)
                         WriteDescriptorCount++;
@@ -1189,11 +1200,9 @@ namespace WPinternals
                     ByteOperations.WriteUInt32(UefiMemorySim.Buffer, StoreHeaderAllocation.ContentStart + 0xEC, 0); // FlashOnlyTableLength - Make flash progress bar white immediately.
                     ByteOperations.WriteUInt32(UefiMemorySim.Buffer, StoreHeaderAllocation.ContentStart + 0xE8, 1); // FlashOnlyTableCount
 
-                    UInt32 CustomChunkCount = FlashingPhaseChunkCount;
-
                     // Write new descriptors
                     // First write descriptor and hash for the first GPT chunk
-                    if (!FlashInProgress && (FlashingPhaseChunkCount > 0))
+                    if (!FlashInProgress) // We only send the first GPT chunk when flash is not in progress yet.
                     {
                         ByteOperations.WriteUInt32(UefiMemorySim.Buffer, StoreHeaderAllocation.ContentStart + NewWriteDescriptorOffset + 0x00, 0x00000001); // Location count
                         ByteOperations.WriteUInt32(UefiMemorySim.Buffer, StoreHeaderAllocation.ContentStart + NewWriteDescriptorOffset + 0x04, 0x00000001); // Chunk count
@@ -1203,45 +1212,33 @@ namespace WPinternals
                         byte[] GPTHashValue = System.Security.Cryptography.SHA256.Create().ComputeHash(GPTChunk, 0, FFU.ChunkSize); // Hash is 0x20 bytes
                         System.Buffer.BlockCopy(GPTHashValue, 0, UefiMemorySim.Buffer, (int)(SecurityHeaderAllocation.ContentStart + NewHashOffset), 0x20);
                         NewHashOffset += 0x20;
-                        CustomChunkCount--;
                     }
 
-                    // TODO: Optimize: make multiple locations for chunks with same content.
-                    Stream CurrentStream = null;
-                    int StreamIndex = FlashingPhaseStartStreamIndex;
-                    if (StreamIndex >= 0)
+                    for (UInt32 i = 0; i < FlashingPhasePayloadCount; i++)
                     {
-                        CurrentStream = FlashParts[StreamIndex].Stream;
-                        CurrentStream.Seek(FlashingPhaseStartStreamPosition, SeekOrigin.Begin);
-                    }
-                    byte[] PayloadBuffer = new byte[FFU.ChunkSize];
-                    for (int i = 0; i < CustomChunkCount; i++)
-                    {
-                        if ((CurrentStream == null) || (CurrentStream.Position == CurrentStream.Length))
+                        FFUPayloadOptimization.FlashingPayload payload = payloads[FlashingPhaseStartPayloadIndex + i];
+
+                        ByteOperations.WriteUInt32(UefiMemorySim.Buffer, StoreHeaderAllocation.ContentStart + NewWriteDescriptorOffset + 0x00, (UInt32)payload.TargetLocations.Count()); // Location count
+                        ByteOperations.WriteUInt32(UefiMemorySim.Buffer, StoreHeaderAllocation.ContentStart + NewWriteDescriptorOffset + 0x04, payload.ChunkCount);                      // Chunk count
+                        NewWriteDescriptorOffset += 0x08;
+
+                        foreach (UInt32 location in payload.TargetLocations)
                         {
-                            StreamIndex++;
-                            CurrentStream = FlashParts[StreamIndex].Stream;
-                            CurrentStream.Seek(0, SeekOrigin.Begin);
-                            DestinationChunkOffset = (UInt32)((Int64)FlashParts[StreamIndex].StartSector * 0x200 / FFU.ChunkSize);
+                            ByteOperations.WriteUInt32(UefiMemorySim.Buffer, StoreHeaderAllocation.ContentStart + NewWriteDescriptorOffset + 0x00, 0x00000000);                          // Disk access method (0 = Begin, 2 = End)
+                            ByteOperations.WriteUInt32(UefiMemorySim.Buffer, StoreHeaderAllocation.ContentStart + NewWriteDescriptorOffset + 0x04, location);                            // Chunk index
+                            NewWriteDescriptorOffset += 0x08;
                         }
 
-                        ByteOperations.WriteUInt32(UefiMemorySim.Buffer, StoreHeaderAllocation.ContentStart + NewWriteDescriptorOffset + 0x00, 0x00000001); // Location count
-                        ByteOperations.WriteUInt32(UefiMemorySim.Buffer, StoreHeaderAllocation.ContentStart + NewWriteDescriptorOffset + 0x04, 0x00000001); // Chunk count
-                        ByteOperations.WriteUInt32(UefiMemorySim.Buffer, StoreHeaderAllocation.ContentStart + NewWriteDescriptorOffset + 0x08, 0x00000000); // Disk access method (0 = Begin, 2 = End)
-                        ByteOperations.WriteUInt32(UefiMemorySim.Buffer, StoreHeaderAllocation.ContentStart + NewWriteDescriptorOffset + 0x0C, DestinationChunkOffset); // Chunk index
-                        NewWriteDescriptorOffset += 0x10;
-
-                        // Write new hash
-                        if ((CurrentStream.Length - CurrentStream.Position) < PayloadBuffer.Length)
-                            Array.Clear(PayloadBuffer, 0, PayloadBuffer.Length);
-                        CurrentStream.Read(PayloadBuffer, 0, FFU.ChunkSize);
-                        byte[] HashValue = System.Security.Cryptography.SHA256.Create().ComputeHash(PayloadBuffer, 0, FFU.ChunkSize); // Hash is 0x20 bytes
-                        System.Buffer.BlockCopy(HashValue, 0, UefiMemorySim.Buffer, (int)(SecurityHeaderAllocation.ContentStart + NewHashOffset), 0x20);
-                        NewHashOffset += 0x20;
-
-                        DestinationChunkOffset++;
+                        foreach (byte[] hashValue in payload.ChunkHashes)
+                        {
+                            // Write new hash
+                            System.Buffer.BlockCopy(hashValue, 0, UefiMemorySim.Buffer, (Int32)(SecurityHeaderAllocation.ContentStart + NewHashOffset), 0x20);
+                            NewHashOffset += 0x20;
+                        }
                     }
 
+                    Stream CurrentStream = null;
+                    int StreamIndex = 0;
                     int Step = 0;
                     try
                     {
@@ -1272,69 +1269,78 @@ namespace WPinternals
                         }
 
                         // Send custom payload
-                        // TODO: Optimize to send multiple chunks at once
                         Step = 3;
-                        DestinationChunkIndex = (PerformFullFlashFirst && (FlashingPhase == 0)) ? (UInt32)FFU.TotalChunkCount : 0;
-
-                        CurrentStream = null;
-                        StreamIndex = FlashingPhaseStartStreamIndex;
-                        if (StreamIndex >= 0)
+                        for (Int32 i = FlashInProgress ? 0 : -1; i < FlashingPhasePayloadCount; i++)
                         {
-                            CurrentStream = FlashParts[StreamIndex].Stream;
-                            CurrentStream.Seek(FlashingPhaseStartStreamPosition, SeekOrigin.Begin);
-                        }
-
-                        for (int i = 0; i < FlashingPhaseChunkCount; i++)
-                        {
-                            string NewProgressText = null;
+                            LogFile.Log("Processing new payload");
+                            string NewProgressText = "Flashing resources...";
                             if (!FlashInProgress)
                             {
                                 // First send the GPT chunk
                                 Step = 4;
-                                System.Buffer.BlockCopy(GPTChunk, 0, Buffer, 0, (int)FFU.ChunkSize);
+                                System.Buffer.BlockCopy(GPTChunk, 0, Buffer, 0, FFU.ChunkSize);
+
+                                Step = 8;
+                                // This may fail. Normally with WPinternalsException for Invalid Hash or Data not aligned.
+                                // Or it may fail with a BadConnectionException when the phone crashes and drops the connection.
+                                Model.SendFfuPayloadV1(Buffer, 0);
+                                if (!FlashInProgress)
+                                {
+                                    Step = 9;
+                                    if (ShowProgress)
+                                        LogFile.Log("Flashing in progress!", LogType.FileAndConsole);
+                                    FlashInProgress = true;
+                                    Scanning = false;
+                                    SetWorkingStatus(null, null, (UInt64?)payloads.Count(), Status: WPinternalsStatus.Flashing);
+                                }
                             }
                             else
                             {
                                 Step = 5;
-                                if ((CurrentStream == null) || (CurrentStream.Position == CurrentStream.Length))
+
+                                FFUPayloadOptimization.FlashingPayload payload = payloads[FlashingPhaseStartPayloadIndex + i];
+
+                                byte[] payloadBuffer = new byte[FFU.ChunkSize * payload.ChunkCount];
+
+                                // We prepare the buffer setup above with all consecutive chunks we have to send in
+                                // We can't send a single chunk otherwise we would get 0x1007: Payload data does not contain all data
+                                for (uint j = 0; j < payload.ChunkCount; j++)
                                 {
-                                    StreamIndex++;
-                                    CurrentStream = FlashParts[StreamIndex].Stream;
-                                    CurrentStream.Seek(0, SeekOrigin.Begin);
-                                    NewProgressText = FlashParts[StreamIndex].ProgressText;
+                                    StreamIndex = (Int32)payload.StreamIndexes[j];
+                                    FlashPart flashPart = FlashParts[StreamIndex];
+                                    CurrentStream = flashPart.Stream;
+                                    CurrentStream.Seek(payload.StreamLocations[j], SeekOrigin.Begin);
+
+                                    Step = 6;
+                                    Array.Clear(payloadBuffer, 0, Buffer.Length); // Not really needed anymore?
+
+                                    Step = 7;
+                                    CurrentStream.Read(payloadBuffer, (Int32)(FFU.ChunkSize * j), FFU.ChunkSize);
                                 }
 
-                                Step = 6;
-                                if ((CurrentStream.Length - CurrentStream.Position) < Buffer.Length)
-                                    Array.Clear(Buffer, 0, Buffer.Length);
+                                Step = 8;
+                                // This may fail. Normally with WPinternalsException for Invalid Hash or Data not aligned.
+                                // Or it may fail with a BadConnectionException when the phone crashes and drops the connection.
 
-                                Step = 7;
-                                CurrentStream.Read(Buffer, 0, FFU.ChunkSize);
-                            }
+                                //
+                                // Note
+                                //
+                                // Right now the code doesn't work to find a flashing profile, at least last time I checked, it only works if a flashing profile already exists
+                                // Didn't find time to look into why it's doing so.
+                                //
+                                // For testing I dumped MainOS.bin from my device FFU file, and I went into Flash section -> Flash manual partitions and picked the MainOS.bin file and sent it
+                                // I commented out in the flash partitions function the code to override UEFI NV storage, so if the code screws up, it doesn't write bad data to GPT or NV
+                                // As a result the device will go into red flash app when flashing is successful.
 
-                            Step = 8;
-                            // This may fail. Normally with WPinternalsException for Invalid Hash or Data not aligned.
-                            // Or it may fail with a BadConnectionException when the phone crashes and drops the connection.
-                            Model.SendFfuPayloadV1(Buffer, ShowProgress ? (int)((FlashingPhaseStartChunkIndex + DestinationChunkIndex + 1) * 100 / TotalChunkCount) : 0);
-                            if (!FlashInProgress)
-                            {
-                                Step = 9;
-                                if (ShowProgress)
-                                    LogFile.Log("Flashing in progress!", LogType.FileAndConsole);
-                                FlashInProgress = true;
-                                Scanning = false;
-                                SetWorkingStatus(null, null, TotalChunkCount, Status: WPinternalsStatus.Flashing);
+                                // This fails when sending multiple chunks with 0x1003: Hash mismatch
+                                Model.SendFfuPayloadV2(payloadBuffer, ShowProgress ? (Int32)((FlashingPhaseStartPayloadIndex + i + 1) * 100 / payloads.Count()) : 0);
                             }
-                            UpdateWorkingStatus(NewProgressText, null, FlashingPhaseStartChunkIndex + DestinationChunkIndex + 1, WPinternalsStatus.Flashing);
-                            NewProgressText = null;
+                            UpdateWorkingStatus(NewProgressText, null, (UInt64?)(FlashingPhaseStartPayloadIndex + i + 1), WPinternalsStatus.Flashing);
                             DestinationChunkIndex++;
                         }
 
                         Step = 10;
-                        FlashingPhaseStartChunkIndex += FlashingPhaseChunkCount;
-                        FlashingPhaseStartStreamIndex = StreamIndex;
-                        if (StreamIndex >= 0)
-                            FlashingPhaseStartStreamPosition = CurrentStream.Position;
+                        FlashingPhaseStartPayloadIndex += FlashingPhasePayloadCount;
 
                         Step = 11;
                         if (!HeadersFull)
@@ -1345,6 +1351,11 @@ namespace WPinternals
                                 LogFile.Log("Custom flash succeeded!", LogType.FileAndConsole);
                             Success = true;
                         }
+                        else
+                        {
+                            // At this point we're missing a few payloads, so we need to start again.
+                            LogFile.Log("Reinitilizing a new flashing attempt because headers were full and we're not quite done yet!");
+                        }
                     }
                     catch (BadConnectionException)
                     {
@@ -1353,7 +1364,7 @@ namespace WPinternals
                             StreamIndex.ToString() + " " +
                             (CurrentStream == null ? "0" : CurrentStream.Position.ToString()) + " " +
                             FlashingPhase.ToString() + " " +
-                            FlashingPhaseStartChunkIndex.ToString() + " " +
+                            FlashingPhaseStartPayloadIndex.ToString() + " " +
                             DestinationChunkIndex.ToString());
                         LogFile.Log("Expect phone to reboot", LogType.FileAndConsole);
                         WaitForReset = true;
@@ -1372,7 +1383,7 @@ namespace WPinternals
                                 StreamIndex.ToString() + " " +
                                 (CurrentStream == null ? "0" : CurrentStream.Position.ToString()) + " " +
                                 FlashingPhase.ToString() + " " +
-                                FlashingPhaseStartChunkIndex.ToString() + " " +
+                                FlashingPhaseStartPayloadIndex.ToString() + " " +
                                 DestinationChunkIndex.ToString());
                             Abort = true;
                         }
@@ -1384,7 +1395,7 @@ namespace WPinternals
                                 StreamIndex.ToString() + " " +
                                 (CurrentStream == null ? "0" : CurrentStream.Position.ToString()) + " " +
                                 FlashingPhase.ToString() + " " +
-                                FlashingPhaseStartChunkIndex.ToString() + " " +
+                                FlashingPhaseStartPayloadIndex.ToString() + " " +
                                 DestinationChunkIndex.ToString());
                         }
 

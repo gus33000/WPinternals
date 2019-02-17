@@ -901,6 +901,7 @@
     <Compile Include="FolderSelectDialog.cs" />
     <Compile Include="Models\ByteOperations.cs" />
     <Compile Include="Models\FFU.cs" />
+    <Compile Include="Models\FFUPayloadOptimization.cs" />
     <Compile Include="Models\GPT.cs" />
     <Compile Include="Models\LumiaDownloadModel.cs" />
     <Compile Include="Models\LZMA.cs" />
