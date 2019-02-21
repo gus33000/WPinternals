@@ -271,6 +271,19 @@ namespace WPinternals
             return ExecuteRawMethod(RawMethod, RawMethod.Length);
         }
 
+        public void ResetDevice()
+        {
+            try
+            {
+                foreach (var pipe in Device.Pipes)
+                {
+                    pipe.Abort();
+                    pipe.Reset();
+                }
+            }
+            catch { }
+        }
+
         public byte[] ExecuteRawMethod(byte[] RawMethod, int Length)
         {
             byte[] Buffer = new byte[0x8000]; // Should be at least 0x4408 for receiving the GPT packet.
