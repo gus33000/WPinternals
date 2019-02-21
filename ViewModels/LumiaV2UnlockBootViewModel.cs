@@ -1573,6 +1573,10 @@ namespace WPinternals
         //
         internal static FlashingPayload[] GetOptimizedPayloads(List<FlashPart> flashParts, Int32 chunkSize, UInt32 MaximumChunkCount, SetWorkingStatus SetWorkingStatus = null, UpdateWorkingStatus UpdateWorkingStatus = null)
         {
+            List<FlashingPayload> flashingPayloads = new List<FlashingPayload>();
+            if (flashParts == null)
+                return flashingPayloads.ToArray();
+
             long TotalProcess1 = 0;
             for (Int32 j = 0; j < flashParts.Count; j++)
             {
@@ -1583,9 +1587,6 @@ namespace WPinternals
             ulong CurrentProcess1 = 0;
             SetWorkingStatus("Hashing resources...", "Initializing flash...", (UInt64)TotalProcess1, Status: WPinternalsStatus.Initializing);
 
-            List<FlashingPayload> flashingPayloads = new List<FlashingPayload>();
-            if (flashParts == null)
-                return flashingPayloads.ToArray();
             using (System.Security.Cryptography.SHA256 crypto = System.Security.Cryptography.SHA256.Create())
             {
                 for (UInt32 j = 0; j < flashParts.Count; j++)
