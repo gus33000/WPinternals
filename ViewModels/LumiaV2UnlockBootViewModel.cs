@@ -331,7 +331,7 @@ namespace WPinternals
                     Partition EFIESPPartition = GPT.GetPartition("EFIESP");
                     byte[] EFIESP = Storage.ReadSectors(EFIESPPartition.FirstSector, EFIESPPartition.SizeInSectors);
                     UInt32 EfiespSizeInSectors = (UInt32)EFIESPPartition.SizeInSectors;
-                    
+
                     //
                     // (ByteOperations.ReadUInt32(EFIESP, 0x20) == (EfiespSizeInSectors / 2)) was originally present in this check, but it does not seem to be reliable with all cases
                     // It should be looked as why some phones have half the sector count in gpt, compared to the real partition.
@@ -1309,7 +1309,7 @@ namespace WPinternals
                                 Step = 5;
 
                                 FlashingPayload payload = payloads[FlashingPhaseStartPayloadIndex + i];
-                                
+
                                 if (payloadCount == (Info.WriteBufferSize / FFU.ChunkSize - 1))
                                 {
                                     sendPayload = true;
@@ -1799,9 +1799,9 @@ namespace WPinternals
             public byte[][] ChunkHashes;
             public UInt32[] TargetLocations;
             public UInt32[] StreamIndexes;
-            public UInt32[] StreamLocations;
+            public Int64[] StreamLocations;
 
-            public FlashingPayload(UInt32 ChunkCount, byte[][] ChunkHashes, UInt32[] TargetLocations, UInt32[] StreamIndexes, UInt32[] StreamLocations)
+            public FlashingPayload(UInt32 ChunkCount, byte[][] ChunkHashes, UInt32[] TargetLocations, UInt32[] StreamIndexes, Int64[] StreamLocations)
             {
                 this.ChunkCount = ChunkCount;
                 this.ChunkHashes = ChunkHashes;
@@ -1846,13 +1846,13 @@ namespace WPinternals
                 FlashPart flashPart = flashParts[(Int32)j];
                 flashPart.Stream.Seek(0, SeekOrigin.Begin);
                 var totalChunkCount = flashPart.Stream.Length / chunkSize;
-                var br = new BinaryReader(flashPart.Stream);
                 for (UInt32 i = 0; i < totalChunkCount; i++)
                 {
                     UpdateWorkingStatus("Hashing resources...", "Initializing flash...", (UInt64)CurrentProcess1, WPinternalsStatus.Initializing);
                     byte[] buffer = new byte[chunkSize];
-                    br.Read(buffer, 0, chunkSize);
-                    flashingPayloads.Add(new FlashingPayload(1, new byte[][] { crypto.ComputeHash(buffer) }, new UInt32[] { (flashPart.StartSector * 0x200 / (UInt32)chunkSize) + i }, new UInt32[] { j }, new UInt32[] { i * (UInt32)chunkSize }));
+                    Int64 position = flashPart.Stream.Position;
+                    flashPart.Stream.Read(buffer, 0, chunkSize);
+                    flashingPayloads.Add(new FlashingPayload(1, new byte[][] { crypto.ComputeHash(buffer) }, new UInt32[] { (flashPart.StartSector * 0x200 / (UInt32)chunkSize) + i }, new UInt32[] { j }, new Int64[] { position }));
                     CurrentProcess1++;
                 }
             }
@@ -1876,36 +1876,38 @@ namespace WPinternals
             ulong CurrentProcess1 = 0;
             SetWorkingStatus("Hashing resources...", "Initializing flash...", (UInt64)TotalProcess1, Status: WPinternalsStatus.Initializing);
 
-            var crypto = System.Security.Cryptography.SHA256.Create();
             List<FlashingPayload> flashingPayloads = new List<FlashingPayload>();
             if (flashParts == null)
                 return flashingPayloads.ToArray();
-            for (UInt32 j = 0; j < flashParts.Count; j++)
+            using (System.Security.Cryptography.SHA256 crypto = System.Security.Cryptography.SHA256.Create())
             {
-                FlashPart flashPart = flashParts[(Int32)j];
-                flashPart.Stream.Seek(0, SeekOrigin.Begin);
-                var totalChunkCount = flashPart.Stream.Length / chunkSize;
-                var br = new BinaryReader(flashPart.Stream);
-                for (UInt32 i = 0; i < totalChunkCount; i++)
+                for (UInt32 j = 0; j < flashParts.Count; j++)
                 {
-                    UpdateWorkingStatus("Hashing resources...", "Initializing flash...", (UInt64)CurrentProcess1, WPinternalsStatus.Initializing);
-                    byte[] buffer = new byte[chunkSize];
-                    br.Read(buffer, 0, chunkSize);
-                    var hash = crypto.ComputeHash(buffer);
-
-                    if (flashingPayloads.Any(x => ByteOperations.Compare(x.ChunkHashes.First(), hash)))
+                    FlashPart flashPart = flashParts[(Int32)j];
+                    flashPart.Stream.Seek(0, SeekOrigin.Begin);
+                    var totalChunkCount = flashPart.Stream.Length / chunkSize;
+                    for (UInt32 i = 0; i < totalChunkCount; i++)
                     {
-                        var payloadIndex = flashingPayloads.FindIndex(x => ByteOperations.Compare(x.ChunkHashes.First(), hash));
-                        var locationList = flashingPayloads[payloadIndex].TargetLocations.ToList();
-                        locationList.Add((flashPart.StartSector * 0x200 / (UInt32)chunkSize) + i);
-                        flashingPayloads[payloadIndex].TargetLocations = locationList.ToArray();
-                    }
-                    else
-                    {
-                        flashingPayloads.Add(new FlashingPayload(1, new byte[][] { hash }, new UInt32[] { (flashPart.StartSector * 0x200 / (UInt32)chunkSize) + i }, new UInt32[] { j }, new UInt32[] { i * (UInt32)chunkSize }));
-                    }
+                        UpdateWorkingStatus("Hashing resources...", "Initializing flash...", (UInt64)CurrentProcess1, WPinternalsStatus.Initializing);
+                        byte[] buffer = new byte[chunkSize];
+                        Int64 position = flashPart.Stream.Position;
+                        flashPart.Stream.Read(buffer, 0, chunkSize);
+                        var hash = crypto.ComputeHash(buffer);
 
-                    CurrentProcess1++;
+                        if (flashingPayloads.Any(x => ByteOperations.Compare(x.ChunkHashes.First(), hash)))
+                        {
+                            var payloadIndex = flashingPayloads.FindIndex(x => ByteOperations.Compare(x.ChunkHashes.First(), hash));
+                            var locationList = flashingPayloads[payloadIndex].TargetLocations.ToList();
+                            locationList.Add((flashPart.StartSector * 0x200 / (UInt32)chunkSize) + i);
+                            flashingPayloads[payloadIndex].TargetLocations = locationList.ToArray();
+                        }
+                        else
+                        {
+                            flashingPayloads.Add(new FlashingPayload(1, new byte[][] { hash }, new UInt32[] { (flashPart.StartSector * 0x200 / (UInt32)chunkSize) + i }, new UInt32[] { j }, new Int64[] { position }));
+                        }
+
+                        CurrentProcess1++;
+                    }
                 }
             }
 
@@ -2545,7 +2547,7 @@ namespace WPinternals
                 Buffer.BlockCopy(BackupEFIESP, 0, BackupUnlockedEFIESP, 0, BackupEFIESP.Length);
 
                 DiscUtils.Fat.FatFileSystem UnlockedBackedEFIESPFileSystem = new DiscUtils.Fat.FatFileSystem(new MemoryStream(BackupUnlockedEFIESP));
-                
+
                 // Magic!
                 // This patch contains multiple hacks to disable SecureBoot, disable Bootpolicies and allow Mass Storage Mode on retail phones
                 App.PatchEngine.TargetImage = UnlockedBackedEFIESPFileSystem;
@@ -2665,7 +2667,7 @@ namespace WPinternals
                 Part.StartSector = OriginalEfiespFirstSector + ((OriginalEfiespSizeInSectors) / 2);
                 Part.Stream = new MemoryStream(BackupEFIESP);
                 Parts.Add(Part);
-                
+
                 await LumiaV2UnlockBootViewModel.LumiaV2CustomFlash(Notifier, ProfileFFU.Path, false, false, Parts, true, true, true, true, false, SetWorkingStatus, UpdateWorkingStatus, null, null, EDEPath);
 
                 LogFile.Log("Bootloader unlocked!", LogType.FileAndConsole);
